@@ -57,8 +57,8 @@ param gatewayKey string
 @description('Comma separated agent identity ids the kill switch watches in Entra (drift sync).')
 param watchedPrincipals string = ''
 
-@allowed([ 'B1', 'B2', 'S1', 'P0v3' ])
-param appServicePlanSku string = 'B1'
+@allowed([ 'B1', 'B2', 'S1', 'B3', 'P0v3' ])
+param appServicePlanSku string = 'B3'
 
 param nodeVersion string = 'NODE|22-lts'
 
