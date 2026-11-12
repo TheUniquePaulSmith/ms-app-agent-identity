@@ -1,0 +1,72 @@
+[
+  {
+    "claimId": "CLAIM-1001",
+    "claimant": "A. Schmidt",
+    "description": "Water damage, kitchen (Berlin)",
+    "region": "EU",
+    "status": "open",
+    "amount": 1250,
+    "litigationHold": false,
+    "demo": "Happy path. User1 (EU) may analyze it through the agent and archive it through the host app."
+  },
+  {
+    "claimId": "CLAIM-1002",
+    "claimant": "J. Miller",
+    "description": "Hail damage, roof (Denver)",
+    "region": "US",
+    "status": "open",
+    "amount": 3400,
+    "litigationHold": false,
+    "demo": "US claim. User2 may analyze it through the agent; User1 is denied (agent-same-region-as-user)."
+  },
+  {
+    "claimId": "CLAIM-1003",
+    "claimant": "M. Rossi",
+    "description": "Disputed fire damage (Milan)",
+    "region": "EU",
+    "status": "open",
+    "amount": 18500,
+    "litigationHold": true,
+    "demo": "Litigation hold: agents never touch it, nobody may archive it."
+  },
+  {
+    "claimId": "CLAIM-1004",
+    "claimant": "L. Dubois",
+    "description": "Stolen bicycle (Lyon)",
+    "region": "EU",
+    "status": "archived",
+    "amount": 900,
+    "litigationHold": false,
+    "demo": "Already archived: archive again is denied (no-archive-twice), analyze is denied (no-analyze-archived)."
+  },
+  {
+    "claimId": "CLAIM-1005",
+    "claimant": "R. Johnson",
+    "description": "Total loss, commercial vehicle (Austin)",
+    "region": "US",
+    "status": "open",
+    "amount": 42000,
+    "litigationHold": false,
+    "demo": "High value. Agent2 app-only is denied (agent-autonomous-limit 10,000), Agent3 app-only is allowed (limit 50,000), and User2 through any registered agent is allowed; app-only archive is denied (archive-over-25000-needs-user); User2 (US + Senior Adjusters) may archive it through the host app."
+  },
+  {
+    "claimId": "CLAIM-1006",
+    "claimant": "S. Novak",
+    "description": "Storm damage, warehouse (Vienna)",
+    "region": "EU",
+    "status": "open",
+    "amount": 12000,
+    "litigationHold": false,
+    "demo": "User1 (EU, not a senior adjuster) is denied archive (archive-over-5000-needs-senior); User2 is denied (archive-own-region); app-only analyze is denied for Agent2 (above 10,000) and allowed for Agent3."
+  },
+  {
+    "claimId": "CLAIM-2002",
+    "claimant": "K. Nguyen",
+    "description": "Burst pipe, apartment (Seattle)",
+    "region": "US",
+    "status": "open",
+    "amount": 7800,
+    "litigationHold": false,
+    "demo": "User2 may analyze it through the agent and archive it through the host app (above 5,000, but a senior adjuster)."
+  }
+]

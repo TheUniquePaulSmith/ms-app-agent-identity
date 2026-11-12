@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>POC Claims Web</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>POC Claims Web</h1>
+      <p class="sub">Agent identity vs application identity, calling the Claims API directly and through an agent loop (LLM + MCP).</p>
+    </div>
+    <div id="session-box" class="session">
+      <span id="session-text">Checking session…</span>
+      <a id="sign-in" class="btn" href="/auth/sign-in?returnUrl=/" hidden>Sign in</a>
+      <a id="sign-out" class="btn secondary" href="/auth/sign-out" hidden>Sign out</a>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="profile" class="active">Profile &amp; tokens</button>
+    <button data-tab="llm">LLM connection</button>
+    <button data-tab="direct">Application runtime (direct API)</button>
+    <button data-tab="agent">Agent runtime loop (LLM + MCP)</button>
+    <button data-tab="gateway">Local LLM &amp; Gateway MCP</button>
+  </nav>
+
+  <!-- ================================================================ -->
+  <section id="tab-profile" class="tab active">
+    <div class="grid two">
+      <div class="card">
+        <h2>Signed-in user</h2>
+        <pre id="profile-user" class="json">—</pre>
+        <div class="row">
+          <button id="refresh-tokens" class="btn">Get / refresh tokens</button>
+          <span class="hint">Calls <code>/auth/token</code>: one token for the host app audience, one for the blueprint audience.</span>
+        </div>
+        <p id="token-error" class="error" hidden></p>
+      </div>
+      <div class="card">
+        <h2>Identities in this demo</h2>
+        <table class="kv">
+          <tr><th>Host application (App Registration)</th><td id="id-host">—</td></tr>
+          <tr><th>Agent blueprint (holds the credential)</th><td id="id-blueprint">—</td></tr>
+          <tr><th>Agent identity (the actor the API sees)</th><td id="id-agent">—</td></tr>
+          <tr><th>Claims API scope (direct calls)</th><td id="id-scope">—</td></tr>
+          <tr><th>MCP server (App Registration, audience of tool-call tokens)</th><td id="id-mcp-client">—</td></tr>
+          <tr><th>MCP server scope (agent loop)</th><td id="id-mcp-scope">—</td></tr>
+          <tr><th>MCP endpoint</th><td id="id-mcp">—</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="grid two">
+      <div class="card">
+        <h2>Host token <span class="tag">aud = host app</span></h2>
+        <p class="hint">Used for <em>host application on behalf of user</em> calls.</p>
+        <pre id="host-token-claims" class="json">—</pre>
+      </div>
+      <div class="card">
+        <h2>Agent token <span class="tag">aud = blueprint</span></h2>
+        <p class="hint">Used for <em>agent identity on behalf of user</em> calls (on-behalf-of exchange by the blueprint).</p>
+        <pre id="agent-token-claims" class="json">—</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================ -->
+  <section id="tab-llm" class="tab">
+    <div class="card">
+      <h2>OpenAI-compatible endpoint (vLLM)</h2>
+      <div class="form">
+        <label>Base URL <input id="llm-base" placeholder="http://localhost:8000/v1" /></label>
+        <label>API key <input id="llm-key" placeholder="not-needed" /></label>
+        <label>Model
+          <span class="row">
+            <select id="llm-model"></select>
+            <input id="llm-model-text" placeholder="or type a model id" />
+          </span>
+        </label>
+      </div>
+      <div class="row">
+        <button id="llm-list" class="btn">List models</button>
+        <button id="llm-test" class="btn">Test tool calling</button>
+        <span class="hint">Settings are kept in this browser (localStorage) and sent with every chat request.</span>
+      </div>
+      <pre id="llm-result" class="json">—</pre>
+    </div>
+  </section>
+
+  <!-- ================================================================ -->
+  <section id="tab-direct" class="tab">
+    <div class="card">
+      <h2>Deterministic application code calls the Claims API</h2>
+      <p class="hint">No model involved. The host app's own code decides what to call and which identity to use. Compare the <code>tokenInfo</code> the Claims API saw.</p>
+      <div class="row">
+        <label>Claim id <input id="claim-id" value="CLAIM-1001" /></label>
+      </div>
+      <div class="scenarios">
+        <button class="btn scenario" data-path="archive" data-auth="none">1. Host app + application → archive</button>
+        <button class="btn scenario" data-path="archive-as-user" data-auth="host">2. Host app + user delegated → archive</button>
+        <button class="btn scenario" data-path="agent-analyze" data-auth="none">3. Agent identity + application → analyze</button>
+        <button class="btn scenario" data-path="agent-analyze-as-user" data-auth="agent">4. Agent identity + user delegated → analyze</button>
+        <button class="btn scenario warn" data-path="archive-as-agent" data-auth="none">Negative: agent tries to archive (expect 403)</button>
+        <button class="btn scenario warn" data-path="analyze-as-host" data-auth="none">Negative: host tries to analyze (expect 403)</button>
+      </div>
+      <div id="direct-summary" class="summary" hidden></div>
+      <pre id="direct-result" class="json">—</pre>
+    </div>
+  </section>
+
+  <!-- ================================================================ -->
+  <section id="tab-agent" class="tab">
+    <div class="grid chat-layout">
+      <div class="card">
+        <h2>Chat with the Claims Assistant</h2>
+        <div class="row">
+          <label>Identity for tool calls
+            <select id="chat-mode">
+              <option value="agent-app">Agent identity, app-only (autonomous agent)</option>
+              <option value="agent-user">Agent identity on behalf of signed-in user (interactive agent)</option>
+              <option value="host-user">Host application on behalf of signed-in user</option>
+              <option value="host-app">Host application, app-only (anti-pattern for agents)</option>
+            </select>
+          </label>
+          <button id="chat-new" class="btn secondary">New conversation</button>
+        </div>
+        <p id="chat-mode-hint" class="hint"></p>
+        <div id="chat-log" class="chat-log"></div>
+        <div class="row">
+          <input id="chat-input" placeholder="e.g. Analyze claim CLAIM-1001" />
+          <button id="chat-send" class="btn">Send</button>
+        </div>
+        <div class="row suggestions">
+          <button class="chip" data-prompt="Analyze claim CLAIM-1001 and summarise the findings.">Analyze CLAIM-1001</button>
+          <button class="chip" data-prompt="What evidence is attached to claim CLAIM-1001?">Evidence for CLAIM-1001</button>
+          <button class="chip" data-prompt="Archive claim CLAIM-1001.">Archive CLAIM-1001</button>
+          <button class="chip" data-prompt="Look up claim CLAIM-2002 and tell me its status.">Status of CLAIM-2002</button>
+        </div>
+        <p id="chat-error" class="error" hidden></p>
+      </div>
+      <div class="card">
+        <h2>Tool-call trace</h2>
+        <p class="hint">Each row is one tool call the model proposed. The identity is decided by the host app, not by the model. Two hops are shown: the token the <b>MCP server</b> validated (audience = MCP server, actor = the chosen identity) and the token the <b>Claims API</b> received after the MCP server exchanged it (actor = MCP server). The inbound token is never forwarded.</p>
+        <div id="trace"></div>
+        <h3>MCP tools available</h3>
+        <button id="mcp-refresh" class="btn secondary">Discover via MCP</button>
+        <pre id="mcp-tools" class="json">—</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================ -->
+  <!-- Local LLM & Gateway MCP: APIM (PEP 1) -> MCP server (PEP 2) -> Claims API (PEP 3), -->
+  <!-- each asking the AuthZEN/Cedar PDP; kill switch via Logic App + Event Grid.          -->
+  <section id="tab-gateway" class="tab">
+    <div class="card">
+      <h2>Gateway scenario <span class="tag">Proposal.md layers 4 + 5</span></h2>
+      <p class="hint">Local LLM, MCP server in Azure behind API Management. Tool calls run as a <b>second agent identity</b> from the same blueprint. Every call is checked by the gateway (kill list, rate limit, coarse AuthZEN decision), by the MCP server (AuthZEN per tool and claim) and by the Claims API (AuthZEN per record). Users are evaluated through their <b>Entra group</b> membership.</p>
+      <table class="kv" id="gw-info">
+        <tr><th>MCP endpoint (APIM)</th><td id="gw-endpoint">—</td></tr>
+        <tr><th>Selected agent identity</th><td id="gw-agent">—</td></tr>
+        <tr><th>Signed-in user (test as User1: EU, User2: US + Senior, User3: no adjuster group)</th><td id="gw-user">—</td></tr>
+        <tr><th>Readiness</th><td id="gw-ready">—</td></tr>
+      </table>
+    </div>
+
+    <div class="grid chat-layout">
+      <div class="card">
+        <h2>Chat with MCP Gateway</h2>
+        <div class="row">
+          <label>Identity for tool calls
+            <select id="gw-mode">
+              <option value="agent-app">Gateway agent, app-only (autonomous)</option>
+              <option value="agent-user">Gateway agent on behalf of signed-in user</option>
+              <option value="host-user">Host application on behalf of signed-in user</option>
+              <option value="host-app">Host application, app-only</option>
+            </select>
+          </label>
+          <label>Agent identity
+            <select id="gw-agent-select"></select>
+          </label>
+          <button id="gw-new" class="btn secondary">New conversation</button>
+        </div>
+        <p id="gw-mode-hint" class="hint"></p>
+        <div id="gw-chat-log" class="chat-log"></div>
+        <div class="row">
+          <input id="gw-input" placeholder="e.g. Analyze claim CLAIM-1001" />
+          <button id="gw-send" class="btn">Send</button>
+        </div>
+        <div class="row suggestions">
+          <button class="chip gw-chip" data-prompt="List the claims I can see.">List claims</button>
+          <button class="chip gw-chip" data-prompt="Analyze claim CLAIM-1001 and summarise the findings.">Analyze 1001 (EU)</button>
+          <button class="chip gw-chip" data-prompt="Analyze claim CLAIM-1002 and summarise the findings.">Analyze 1002 (US)</button>
+          <button class="chip gw-chip" data-prompt="Analyze claim CLAIM-1003.">Analyze 1003 (litigation hold)</button>
+          <button class="chip gw-chip" data-prompt="Analyze claim CLAIM-1005.">Analyze 1005 (42,000)</button>
+          <button class="chip gw-chip" data-prompt="Archive claim CLAIM-1001.">Archive 1001</button>
+          <button class="chip gw-chip" data-prompt="Archive claim CLAIM-1004.">Archive 1004 (archived)</button>
+          <button class="chip gw-chip" data-prompt="Archive claim CLAIM-1006.">Archive 1006 (12,000 EU)</button>
+          <button class="chip gw-chip" data-prompt="Archive claim CLAIM-2002.">Archive 2002 (7,800 US)</button>
+        </div>
+        <p id="gw-chat-error" class="error" hidden></p>
+      </div>
+      <div class="card">
+        <h2>Enforcement trace</h2>
+        <p class="hint">One block per tool call. <b>PEP 1</b> API Management, <b>PEP 2</b> MCP server, <b>PEP 3</b> Claims API. Each PEP asks the PDP (AuthZEN over Cedar); a <code>forbid</code> always beats a <code>permit</code>.</p>
+        <div id="gw-trace"></div>
+        <h3>Tools offered (tools/list filtered by the PDP)</h3>
+        <button id="gw-tools" class="btn secondary">Discover via gateway</button>
+        <pre id="gw-tools-result" class="json">—</pre>
+      </div>
+    </div>
+
+    <nav class="subtabs" role="tablist">
+      <button data-subtab="killswitch" class="active" role="tab">Kill switch</button>
+      <button data-subtab="claims" role="tab">Claims table</button>
+      <button data-subtab="pdp" role="tab">PDP playground</button>
+      <button data-subtab="entities" role="tab">PDP entities</button>
+    </nav>
+
+    <div id="subtab-killswitch" class="subtab active">
+      <div class="card">
+        <h2>Kill switch <span class="tag">Logic App → Event Grid → kill list</span></h2>
+        <div class="form">
+          <label>Target
+            <select id="ks-scope">
+              <option value="agent:gateway">Selected agent identity (agent scope)</option>
+              <option value="blueprint">Agent blueprint (every agent of it)</option>
+              <option value="user">Signed-in user (agents and apps acting for them)</option>
+              <option value="agent:host">Host application (by azp)</option>
+            </select>
+          </label>
+          <label>Target id <input id="ks-target" /></label>
+          <label>Reason <input id="ks-reason" value="Suspected prompt injection, INC-4821" /></label>
+          <label class="inline"><input type="checkbox" id="ks-entra" /> Also disable / enable the agent identity in Entra (backstop, agent scope only)</label>
+        </div>
+        <div class="row">
+          <button id="ks-kill" class="btn warn">Kill</button>
+          <button id="ks-restore" class="btn">Restore</button>
+          <button id="ks-refresh" class="btn secondary">Refresh kill list</button>
+        </div>
+        <pre id="ks-result" class="json">—</pre>
+        <h3>Kill list (Redis)</h3>
+        <div id="ks-list" class="hint">—</div>
+        <h3>Audit (kill switch service, Azure Table)</h3>
+        <div id="ks-audit" class="hint">—</div>
+      </div>
+    </div>
+
+    <div id="subtab-claims" class="subtab">
+      <div class="card">
+        <h2>Claims table <span class="tag">Azure Storage, changed by the Claims API</span></h2>
+        <div class="row">
+          <button id="claims-refresh" class="btn secondary">Refresh</button>
+          <button id="claims-reset" class="btn warn">Reset sample data</button>
+        </div>
+        <div id="claims-table" class="hint">—</div>
+      </div>
+    </div>
+
+    <div id="subtab-pdp" class="subtab">
+      <div class="card">
+        <h2>PDP playground <span class="tag">AuthZEN 1.0</span></h2>
+        <p class="hint">Send an AuthZEN request straight to the PDP (through this web app). The Cedar policies, schema and entity configuration are shown below.</p>
+        <div class="row">
+          <label>Preset
+            <select id="pdp-preset"></select>
+          </label>
+          <button id="pdp-evaluate" class="btn">Evaluate</button>
+          <button id="pdp-policies" class="btn secondary">Show policies</button>
+        </div>
+        <div class="grid two">
+          <textarea id="pdp-request" class="json" rows="22" spellcheck="false"></textarea>
+          <pre id="pdp-result" class="json">—</pre>
+        </div>
+        <details><summary>Cedar policies and schema</summary><pre id="pdp-policy-text" class="json">—</pre></details>
+      </div>
+    </div>
+
+    <div id="subtab-entities" class="subtab">
+      <div class="card">
+        <h2>PDP entities <span class="tag">Azure Storage table, read by the PDP</span></h2>
+        <p class="hint">The PDP's registry of blueprints, agents, applications and groups. This web app writes it <b>straight into the storage account</b>; after each change the PDP is told to reload (it also re-reads the table every 30 s). An agent that is not listed here is refused by <code>agent-must-be-registered</code>.</p>
+        <div class="row">
+          <button id="ent-refresh" class="btn secondary">Refresh</button>
+          <span id="ent-status" class="hint">—</span>
+        </div>
+        <div id="ent-tables" class="hint">—</div>
+
+        <h3 id="ent-form-title">Add entity</h3>
+        <div class="form">
+          <label>Kind
+            <select id="ent-kind">
+              <option value="agent">Agent identity</option>
+              <option value="blueprint">Agent blueprint</option>
+              <option value="application">Application</option>
+              <option value="group">Group</option>
+              <option value="member">Local member (GROUP_SOURCE=local only)</option>
+            </select>
+          </label>
+          <label>Id <input id="ent-id" spellcheck="false" /></label>
+          <label data-kinds="agent blueprint application group">Display name <input id="ent-displayName" /></label>
+          <label data-kinds="agent">Blueprint (app id) <input id="ent-blueprint" list="ent-blueprint-list" spellcheck="false" /></label>
+          <label data-kinds="agent">Autonomous limit (largest claim amount without a user) <input id="ent-autonomousLimit" type="number" min="0" step="1" value="10000" /></label>
+          <label data-kinds="application" class="inline"><input type="checkbox" id="ent-isMcpServer" /> MCP server (trusted intermediary at the Claims API)</label>
+          <label data-kinds="group">Entra group object id (for Graph checkMemberGroups) <input id="ent-entraObjectId" spellcheck="false" /></label>
+          <label data-kinds="group">Region (adjusters of claims in this region) <input id="ent-region" placeholder="EU, US or empty" /></label>
+          <div data-kinds="member">Groups <div id="ent-groups" class="row"></div></div>
+        </div>
+        <datalist id="ent-blueprint-list"></datalist>
+        <div class="row">
+          <button id="ent-save" class="btn">Save to storage</button>
+          <button id="ent-clear" class="btn secondary">Clear form</button>
+        </div>
+        <pre id="ent-result" class="json">—</pre>
+      </div>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+  <script src="gateway.js"></script>
+</body>
+</html>

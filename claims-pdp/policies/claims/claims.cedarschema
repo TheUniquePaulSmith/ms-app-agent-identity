@@ -1,0 +1,42 @@
+// Claims domain layer (Proposal.md section 5.4, extended).
+//
+// Principals are the identity that HOLDS the credential (the azp of the token):
+// a Platform::Agent or a Platform::Application (host app, MCP server). The
+// signed-in user, when there is one, travels in context.onBehalfOf and is a
+// member of Platform::Group entities (resolved by the PDP through Microsoft Graph).
+
+namespace Claims {
+  entity McpServer;
+
+  entity Claim = {
+    exists: Bool,
+    region: String,           // "EU" | "US"
+    status: String,           // "open" | "analyzed" | "archived"
+    amount: Long,
+    litigationHold: Bool,
+    adjusterGroup: Platform::Group,  // the adjuster group that owns the claim's region
+  };
+
+  type RequestContext = {
+    permissions: Set<String>,        // roles or scp from the Entra token (layer 3 output)
+    pep: String,                     // "gateway" | "claims-mcp" | "claims-api"
+    onBehalfOf?: Platform::User,     // platform contract (see platform.cedarschema)
+    mcpMethod?: String,              // JSON-RPC method seen by the gateway
+    agentAutonomousLimit?: Long,     // highest claim amount the agent may touch without a user (agents only)
+  };
+
+  // Gateway (PEP 1): coarse "may this caller talk to the MCP server at all".
+  action "mcp_request" appliesTo {
+    principal: [Platform::Agent, Platform::Application],
+    resource: [McpServer],
+    context: RequestContext,
+  };
+
+  // MCP server (PEP 2) and Claims API (PEP 3). McpServer is the resource when
+  // the MCP server filters tools/list (no claim chosen yet).
+  action "get_claim", "get_claim_evidence", "analyze_claim", "archive_claim" appliesTo {
+    principal: [Platform::Agent, Platform::Application],
+    resource: [Claim, McpServer],
+    context: RequestContext,
+  };
+}

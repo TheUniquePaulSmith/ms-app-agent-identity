@@ -1,0 +1,17 @@
+{
+  "name": "claims-mcp",
+  "version": "2.0.0",
+  "description": "MCP server (OAuth resource server) in front of the POC Claims API: validates tokens issued for itself, authorizes on its own scopes/app roles, then exchanges (OBO or client credentials) for a Claims API token. Never forwards the inbound token.",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^7.1.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "express": "^5.3.0",
+    "jose": "^6.2.13",
+    "zod": "^4.6.7"
+  }
+}

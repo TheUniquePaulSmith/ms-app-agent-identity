@@ -1,0 +1,21 @@
+{
+  "name": "claims-pdp",
+  "version": "1.0.0",
+  "description": "Policy Decision Point for the POC: OpenID AuthZEN Authorization API 1.0 in front of Cedar policies. Reads the kill list from Redis, claim attributes from Azure Table storage and the user's Entra group membership from Microsoft Graph.",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@azure/data-tables": "^13.3.2",
+    "@azure/identity": "^4.14.0",
+    "@cedar-policy/cedar-wasm": "4.14.0",
+    "express": "^5.3.0",
+    "redis": "^6.3.1"
+  }
+}

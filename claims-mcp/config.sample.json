@@ -1,0 +1,10 @@
+{
+  "TENANT_ID": "<directory (tenant) id>",
+  "MCP_CLIENT_ID": "<app (client) id printed by Configure/Configure-McpEntra.ps1>",
+  "MCP_CLIENT_SECRET": "<secret printed by Configure/Configure-McpEntra.ps1>",
+  "CLAIMS_API_APP_ID": "<app (client) id of the POC Claims API registration>",
+  "KNOWN_AGENT_APP_IDS": "",
+  "CLAIMS_API_URL": "http://localhost:5001",
+  "SELF_URL": "http://localhost:5002",
+  "PORT": 5002
+}

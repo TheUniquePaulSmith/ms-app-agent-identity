@@ -1,0 +1,43 @@
+// Platform layer: identity types shared by every domain PDP.
+//
+// In production this file and guardrails.cedar come from a central policy repo
+// and ship unchanged in every domain's bundle; domain teams do not edit them.
+// Types here carry identity and lifecycle attributes only (registered, killed,
+// blueprint); anything about a domain's data belongs in that domain's schema.
+//
+// Contract for domain schemas: every action's context may carry
+//   onBehalfOf?: Platform::User
+// so kill-switch-user can see the signed-in user.
+
+namespace Platform {
+  entity Blueprint = {
+    displayName: String,
+    killed: Bool,             // kill:blueprint:<id> present in the kill list
+  };
+
+  // Agent in [Blueprint] mirrors Entra's blueprint -> agent identity relationship.
+  entity Agent in [Blueprint] = {
+    displayName: String,
+    registered: Bool,         // an "agent" row in the PdpEntities registry
+    killed: Bool,             // kill:agent:<id> present in the kill list
+    blueprint: Blueprint,
+  };
+
+  entity Application = {
+    displayName: String,
+    registered: Bool,         // an "application" row in the PdpEntities registry
+    killed: Bool,
+    isMcpServer: Bool,        // trusted intermediary (Proposal 5.8 option A)
+  };
+
+  // Entra security groups. Ids are friendly names; the registry's "group" rows
+  // map them to Entra object ids. Which groups exist is domain data.
+  entity Group = {
+    displayName: String,
+  };
+
+  entity User in [Group] = {
+    upn: String,
+    killed: Bool,             // kill:user:<oid> present in the kill list
+  };
+}

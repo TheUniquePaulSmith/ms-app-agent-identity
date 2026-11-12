@@ -1,0 +1,223 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "topicEndpoint": { "type": "String" },
+    "killSwitchUrl": { "type": "String" },
+    "internalKey": { "type": "SecureString" }
+  },
+  "triggers": {
+    "manual": {
+      "type": "Request",
+      "kind": "Http",
+      "inputs": {
+        "method": "POST",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "action": { "type": "string", "description": "kill | restore" },
+            "scope": { "type": "string", "description": "agent | blueprint | user" },
+            "targetId": { "type": "string" },
+            "blueprintId": { "type": "string" },
+            "reason": { "type": "string" },
+            "requestedBy": { "type": "string" },
+            "disableInEntra": { "type": "boolean", "description": "agent scope only: also flip accountEnabled in Entra (the backstop)" },
+            "expiresAt": { "type": "string" }
+          },
+          "required": [ "action", "scope", "targetId" ]
+        }
+      }
+    }
+  },
+  "actions": {
+    "Build_event": {
+      "type": "Compose",
+      "runAfter": {},
+      "inputs": {
+        "specversion": "1.0",
+        "type": "@{if(equals(toLower(triggerBody()?['action']), 'restore'), 'Poc.Agent.Restored', 'Poc.Agent.Killed')}",
+        "source": "/poc/claims/admin-workflow",
+        "subject": "@{concat(toLower(triggerBody()?['scope']), 's/', triggerBody()?['targetId'])}",
+        "id": "@{guid()}",
+        "time": "@{utcNow()}",
+        "datacontenttype": "application/json",
+        "data": {
+          "scope": "@{toLower(triggerBody()?['scope'])}",
+          "targetId": "@{triggerBody()?['targetId']}",
+          "blueprintId": "@{coalesce(triggerBody()?['blueprintId'], '')}",
+          "reason": "@{coalesce(triggerBody()?['reason'], '')}",
+          "requestedBy": "@{coalesce(triggerBody()?['requestedBy'], 'logic-app')}",
+          "expiresAt": "@triggerBody()?['expiresAt']",
+          "workflowRunId": "@{workflow()?['run']?['name']}"
+        }
+      }
+    },
+    "Touch_Entra": {
+      "type": "Compose",
+      "runAfter": { "Build_event": [ "Succeeded" ] },
+      "inputs": "@and(equals(toLower(triggerBody()?['scope']), 'agent'), equals(triggerBody()?['disableInEntra'], true))"
+    },
+    "Kill_or_restore": {
+      "type": "If",
+      "runAfter": { "Touch_Entra": [ "Succeeded" ] },
+      "expression": {
+        "and": [ { "not": { "equals": [ "@toLower(triggerBody()?['action'])", "restore" ] } } ]
+      },
+      "actions": {
+        "Publish_AgentKilled": {
+          "type": "Http",
+          "runAfter": {},
+          "inputs": {
+            "method": "POST",
+            "uri": "@parameters('topicEndpoint')",
+            "headers": { "Content-Type": "application/cloudevents-batch+json; charset=utf-8" },
+            "body": "@createArray(outputs('Build_event'))",
+            "authentication": { "type": "ManagedServiceIdentity", "audience": "https://eventgrid.azure.net" }
+          }
+        },
+        "Disable_in_Entra_if_requested": {
+          "type": "If",
+          "runAfter": { "Publish_AgentKilled": [ "Succeeded" ] },
+          "expression": { "and": [ { "equals": [ "@outputs('Touch_Entra')", true ] } ] },
+          "actions": {
+            "Disable_agent_identity": {
+              "type": "Http",
+              "runAfter": {},
+              "inputs": {
+                "method": "PATCH",
+                "uri": "https://graph.microsoft.com/v1.0/servicePrincipals/@{triggerBody()?['targetId']}/microsoft.graph.agentIdentity",
+                "headers": { "Content-Type": "application/json" },
+                "body": { "accountEnabled": false },
+                "authentication": { "type": "ManagedServiceIdentity", "audience": "https://graph.microsoft.com" }
+              }
+            }
+          },
+          "else": { "actions": {} }
+        },
+        "Wait_for_kill_list": {
+          "type": "Until",
+          "runAfter": { "Disable_in_Entra_if_requested": [ "Succeeded", "Failed" ] },
+          "expression": "@equals(body('Check_kill_list')?['hit'], true)",
+          "limit": { "count": 15, "timeout": "PT1M" },
+          "actions": {
+            "Check_kill_list": {
+              "type": "Http",
+              "runAfter": {},
+              "inputs": {
+                "method": "GET",
+                "uri": "@{parameters('killSwitchUrl')}/kills/check?@{toLower(triggerBody()?['scope'])}=@{triggerBody()?['targetId']}",
+                "headers": { "x-pdp-key": "@parameters('internalKey')" }
+              }
+            },
+            "Pause": {
+              "type": "Wait",
+              "runAfter": { "Check_kill_list": [ "Succeeded", "Failed" ] },
+              "inputs": { "interval": { "count": 2, "unit": "Second" } }
+            }
+          }
+        },
+        "Respond_killed": {
+          "type": "Response",
+          "kind": "Http",
+          "runAfter": { "Wait_for_kill_list": [ "Succeeded", "Failed", "TimedOut" ] },
+          "inputs": {
+            "statusCode": 200,
+            "headers": { "Content-Type": "application/json" },
+            "body": {
+              "action": "kill",
+              "eventId": "@{outputs('Build_event')?['id']}",
+              "eventType": "Poc.Agent.Killed",
+              "scope": "@{toLower(triggerBody()?['scope'])}",
+              "targetId": "@{triggerBody()?['targetId']}",
+              "order": "1. publish AgentKilled (fast path)  2. disable in Entra (backstop)  3. confirm kill list",
+              "eventPublished": "@{actions('Publish_AgentKilled')?['status']}",
+              "entraDisable": "@{coalesce(actions('Disable_agent_identity')?['status'], 'not requested')}",
+              "entraError": "@{actions('Disable_agent_identity')?['outputs']?['body']?['error']?['message']}",
+              "killListConfirmed": "@equals(body('Check_kill_list')?['hit'], true)",
+              "workflowRunId": "@{workflow()?['run']?['name']}"
+            }
+          }
+        }
+      },
+      "else": {
+        "actions": {
+          "Enable_in_Entra_if_requested": {
+            "type": "If",
+            "runAfter": {},
+            "expression": { "and": [ { "equals": [ "@outputs('Touch_Entra')", true ] } ] },
+            "actions": {
+              "Enable_agent_identity": {
+                "type": "Http",
+                "runAfter": {},
+                "inputs": {
+                  "method": "PATCH",
+                  "uri": "https://graph.microsoft.com/v1.0/servicePrincipals/@{triggerBody()?['targetId']}/microsoft.graph.agentIdentity",
+                  "headers": { "Content-Type": "application/json" },
+                  "body": { "accountEnabled": true },
+                  "authentication": { "type": "ManagedServiceIdentity", "audience": "https://graph.microsoft.com" }
+                }
+              }
+            },
+            "else": { "actions": {} }
+          },
+          "Publish_AgentRestored": {
+            "type": "Http",
+            "runAfter": { "Enable_in_Entra_if_requested": [ "Succeeded" ] },
+            "inputs": {
+              "method": "POST",
+              "uri": "@parameters('topicEndpoint')",
+              "headers": { "Content-Type": "application/cloudevents-batch+json; charset=utf-8" },
+              "body": "@createArray(outputs('Build_event'))",
+              "authentication": { "type": "ManagedServiceIdentity", "audience": "https://eventgrid.azure.net" }
+            }
+          },
+          "Wait_for_restore": {
+            "type": "Until",
+            "runAfter": { "Publish_AgentRestored": [ "Succeeded" ] },
+            "expression": "@equals(body('Check_restored')?['hit'], false)",
+            "limit": { "count": 15, "timeout": "PT1M" },
+            "actions": {
+              "Check_restored": {
+                "type": "Http",
+                "runAfter": {},
+                "inputs": {
+                  "method": "GET",
+                  "uri": "@{parameters('killSwitchUrl')}/kills/check?@{toLower(triggerBody()?['scope'])}=@{triggerBody()?['targetId']}",
+                  "headers": { "x-pdp-key": "@parameters('internalKey')" }
+                }
+              },
+              "Pause_restore": {
+                "type": "Wait",
+                "runAfter": { "Check_restored": [ "Succeeded", "Failed" ] },
+                "inputs": { "interval": { "count": 2, "unit": "Second" } }
+              }
+            }
+          },
+          "Respond_restored": {
+            "type": "Response",
+            "kind": "Http",
+            "runAfter": { "Wait_for_restore": [ "Succeeded", "Failed", "TimedOut", "Skipped" ] },
+            "inputs": {
+              "statusCode": "@if(equals(actions('Publish_AgentRestored')?['status'], 'Succeeded'), 200, 502)",
+              "headers": { "Content-Type": "application/json" },
+              "body": {
+                "action": "restore",
+                "eventId": "@{outputs('Build_event')?['id']}",
+                "eventType": "Poc.Agent.Restored",
+                "scope": "@{toLower(triggerBody()?['scope'])}",
+                "targetId": "@{triggerBody()?['targetId']}",
+                "order": "1. enable in Entra  2. publish AgentRestored  3. confirm kill list cleared",
+                "entraEnable": "@{coalesce(actions('Enable_agent_identity')?['status'], 'not requested')}",
+                "entraError": "@{actions('Enable_agent_identity')?['outputs']?['body']?['error']?['message']}",
+                "eventPublished": "@{actions('Publish_AgentRestored')?['status']}",
+                "killListCleared": "@{actions('Wait_for_restore')?['status']}",
+                "workflowRunId": "@{workflow()?['run']?['name']}"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "outputs": {}
+}

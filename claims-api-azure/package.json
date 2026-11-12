@@ -1,0 +1,19 @@
+{
+  "name": "claims-api-azure",
+  "version": "1.0.0",
+  "description": "Hosted POC Claims API (PEP 3): validates Entra tokens with jose, asks the AuthZEN PDP per record, and reads/changes claim records in Azure Table storage.",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@azure/data-tables": "^13.3.2",
+    "@azure/identity": "^4.14.0",
+    "express": "^5.3.0",
+    "jose": "^6.2.13"
+  }
+}

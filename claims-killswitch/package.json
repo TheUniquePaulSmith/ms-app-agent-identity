@@ -1,0 +1,19 @@
+{
+  "name": "claims-killswitch",
+  "version": "1.0.0",
+  "description": "Kill switch service for the POC: single writer of the Redis kill list. Receives Poc.Agent.Killed / Poc.Agent.Restored CloudEvents from Event Grid, writes an audit trail to Azure Table storage and syncs Entra accountEnabled drift.",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@azure/data-tables": "^13.3.2",
+    "@azure/identity": "^4.14.0",
+    "express": "^5.3.0",
+    "redis": "^6.3.1"
+  }
+}

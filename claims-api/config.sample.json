@@ -1,0 +1,7 @@
+{
+  "TENANT_ID": "<directory (tenant) id>",
+  "CLAIMS_API_APP_ID": "<app (client) id of the POC Claims API registration>",
+  "KNOWN_AGENT_APP_IDS": "",
+  "KNOWN_MCP_APP_IDS": "",
+  "PORT": 5001
+}

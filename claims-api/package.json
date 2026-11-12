@@ -1,0 +1,13 @@
+{
+  "name": "claims-api-debug",
+  "version": "2.0.0",
+  "description": "Debug stand-in for the downstream Claims API. Validates incoming Entra bearer tokens (signature via tenant JWKS, issuer, tenant, audience, expiry), then enforces roles/scp per route and logs what it saw.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "jose": "^6.2.13"
+  }
+}

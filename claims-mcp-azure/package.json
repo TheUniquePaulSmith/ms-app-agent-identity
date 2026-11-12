@@ -1,0 +1,20 @@
+{
+  "name": "claims-mcp-azure",
+  "version": "3.0.0",
+  "description": "Hosted MCP server for the gateway scenario (PEP 2): validates tokens issued for itself, asks the AuthZEN PDP per tool call and filters tools/list, then exchanges (OBO or client credentials) for a hosted Claims API token. Never forwards the inbound token.",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^7.1.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "express": "^5.3.0",
+    "jose": "^6.2.13",
+    "zod": "^4.6.7"
+  }
+}
