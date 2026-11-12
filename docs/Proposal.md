@@ -648,16 +648,23 @@ permission when available) to disable agents.
 | Workflow | PowerShell scripts | Logic App with managed identity and an approval step for restore |
 | Latency target | under 1 s from script to 403 | under 5 s from workflow start to 403 at every gateway |
 
-## 10. Standards status (October 2026)
+## 10. Standards status (November 2026)
+
+The README's [Emerging standards and layers](../README.md#emerging-standards-and-layers) section
+also maps these standards and the matching products to each layer.
 
 | Standard | Status | Used here |
 | --- | --- | --- |
-| OpenID AuthZEN Authorization API 1.0 | Final (January 2026); agent tool authorization and approval profiles in working-group draft (June 2026) | Yes, PEP ↔ PDP contract |
-| Cedar | Open source, CNCF project; used by Amazon Verified Permissions and AgentCore Policy | Yes, policy language and engine |
-| CloudEvents 1.0 | CNCF graduated; native on Event Grid | Yes, kill / restore events |
-| OpenID Shared Signals / CAEP | SSF 1.0 final (August 2025); not offered by Entra for custom resources | No. The Event Grid design fills the same role; the kill switch service could later act as an SSF transmitter |
-| OAuth Transaction Tokens | IETF working-group draft; no Entra support | Listed as section 5.8 option C only |
-| IETF WIMSE / agent auth drafts | Individual and working-group drafts | No |
+| [OpenID AuthZEN Authorization API 1.0](https://openid.net/wg/authzen/specifications/) | Final (January 2026). The MCP tool authorization profile (COAZ) and the Access Request and Approval Profile (AARP) became working-group drafts in June 2026 | Yes, PEP ↔ PDP contract |
+| [Cedar](https://www.cncf.io/projects/cedar/) | Open source; CNCF Sandbox since October 2025. Used by Amazon Verified Permissions and AgentCore Policy (GA March 2026) | Yes, policy language and engine |
+| [CloudEvents 1.0](https://cloudevents.io/) | CNCF graduated; native on Event Grid | Yes, kill / restore events |
+| [OpenID Shared Signals Framework / CAEP / RISC 1.0](https://openid.net/specs/openid-sharedsignals-framework-1_0-final.html) | Final (published September 2025). Entra's CAE uses CAEP for Microsoft resources but sends no events to custom APIs | No. The Event Grid design fills the same role; the kill switch service could later act as an SSF transmitter |
+| [OAuth Transaction Tokens](https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/) | IETF OAuth working-group draft (-11, July 2026), past working-group consensus and waiting for write-up; no Entra support | Listed as section 5.8 option C only |
+| [ID-JAG](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-assertion-authz-grant/) (Identity Assertion JWT Authorization Grant) | IETF OAuth working-group draft (-06, October 2026). Used by the MCP Enterprise-Managed Authorization extension; Okta ships it as Cross App Access. No Entra support announced | No |
+| [MCP authorization](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) | Part of MCP revision 2026-07-28: Protected Resource Metadata required, Client ID Metadata Documents preferred over dynamic registration | Partly: the MCP server is its own OAuth resource with audience binding ([details](mcp-server.md)) |
+| [IETF WIMSE AI agent work](https://datatracker.ietf.org/doc/draft-ietf-wimse-aims/) | `draft-ietf-wimse-aims` (-01, November 2026) is a WIMSE working-group document that replaces the individual `draft-klrc-aiagent-auth`; further individual drafts on agent identity and delegation | No |
+| [SCIM for agents](https://datatracker.ietf.org/doc/draft-wzdk-scim-agent-resource/) | Individual draft (-00, June 2026, authors from Microsoft and Okta) adding an `Agent` resource type to SCIM; a governance extension draft builds on it | No |
+| [A2A protocol](https://a2a-protocol.org/latest/) | Version 1.0 (2026) under the Linux Foundation; adds signed Agent Cards | No |
 
 ## 11. Open questions
 
