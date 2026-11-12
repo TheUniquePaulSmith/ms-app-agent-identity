@@ -650,7 +650,7 @@ permission when available) to disable agents.
 
 ## 10. Standards status (November 2026)
 
-The README's [Emerging standards and layers](../README.md#emerging-standards-and-layers) section
+[Emerging standards and layers](emerging-standards.md)
 also maps these standards and the matching products to each layer.
 
 | Standard | Status | Used here |
