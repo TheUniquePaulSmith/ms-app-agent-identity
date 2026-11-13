@@ -2,14 +2,30 @@
 <#
 .SYNOPSIS
     Applies the Graph-only parts of docs/entra-setup.md for the agent blueprint and agent identity,
-    and optionally creates the POC's test agents (Agent1-4) and test users (User1-4) with the Entra
-    groups the PDP policies use.
+    and optionally creates the POC's app registrations, its test agents (Agent1-4) and test users
+    (User1-4) with the Entra groups the PDP policies use.
 
 .DESCRIPTION
     Steps (each is idempotent and prints what it found or changed):
 
+      0. With -TestAppRegs: the app registrations of docs/entra-setup.md 4A-4C, each found by the app
+         id in appsettings.json or by display name, created when missing:
+           POC Claims API                       v2 tokens, api://<id>, scopes Claims.Archive / Claims.Analyze,
+                                                app roles Claims.Archive.All / Claims.Analyze.All, optional
+                                                claims idtyp + agent facet claims (4A)
+           POC Claims Analysis Agent Blueprint  blueprint + blueprint principal, sponsor and owner the
+                                                signed-in admin, a client secret (4C.1-2)
+           POC Claims Web                       v2 tokens, redirect URIs http://localhost:5094/signin-oidc and
+                                                https://localhost:7221/signin-oidc, api://<id> with scope
+                                                access_as_user, a client secret (4B.1-3)
+         Writes the tenant id, client ids, scopes and new secrets into appsettings.json (created from
+         appsettings.sample.json when missing) and claims-api/config.json. A secret is minted for a new
+         registration, when appsettings.json has none, or with -NewSecrets; otherwise it is kept.
       1. Blueprint: set identifier URI api://<blueprint-app-id> and expose the access_agent scope (docs/entra-setup.md 4C.3).
       2. Host app: grant the delegated access_agent scope on the blueprint principal (docs/entra-setup.md 4B).
+         With -TestAppRegs also Claims.Archive (delegated) and Claims.Archive.All (application) on the
+         Claims API, sign-in consent (openid, profile, offline_access, User.Read) and the API
+         permissions list; then the MCP server registration (Configure-McpEntra.ps1 -WriteConfig).
       3. With -TestAgents: the four test agents of docs/test-identities.md, all from the same blueprint:
            Agent1  "POC Claims Local Analysis Agent (Agent1)"       AgentIdentity:ClientId (created when not set yet);
                    direct Claims API grants + MCP grants; the local tabs' agent; not in the PDP
@@ -35,7 +51,9 @@
 
     Run it in a normal PowerShell 7 prompt:
       .\Configure\Configure-Entra.ps1                                    # steps 1, 2, 7
-      .\Configure\Configure-Entra.ps1 -TestAgents -TestUsers             # the full test setup
+      .\Configure\Configure-Entra.ps1 -SetupAll                          # everything: same as -TestAppRegs -TestAgents -TestUsers
+      .\Configure\Configure-Entra.ps1 -SetupAll -TenantId <tenant id>    # a new tenant, before appsettings.json exists
+      .\Configure\Configure-Entra.ps1 -TestAgents -TestUsers             # test identities on existing registrations
       .\Configure\Configure-Entra.ps1 -TestUsers -User1 alice@contoso.com -User2 bob@contoso.com
       .\Configure\Configure-Entra.ps1 -NewAgent "POC Claims Agent 5" -AutonomousLimit 2000
 
@@ -45,6 +63,8 @@
 .NOTES
     Needs: Microsoft.Graph PowerShell module and a user with Agent ID Administrator (or owner of the
     blueprint) plus rights to grant application permissions (for example Cloud Application Administrator).
+    -TestAppRegs also needs rights to create app registrations and blueprints (Cloud Application
+    Administrator plus Agent ID Administrator, which is required to add the blueprint's secret).
     -TestUsers also needs User Administrator (create users) and Groups Administrator, or Global Admin.
     Creating agents uses the blueprint's client secret from appsettings.json (AgentBlueprint).
     The PDP picks up registry changes within 30 s (it re-reads the PdpEntities table).
@@ -58,8 +78,14 @@ param(
     [string]   $BlueprintAppId,
     [string]   $AgentIdentityId,
     [string]   $McpAppId,
+    # Create / update the app registrations (Claims API, blueprint, host app, MCP server).
+    [switch]   $TestAppRegs,
     [switch]   $TestAgents,
     [switch]   $TestUsers,
+    # Everything: -TestAppRegs -TestAgents -TestUsers.
+    [switch]   $SetupAll,
+    # With -TestAppRegs: mint new client secrets even where appsettings.json already holds one.
+    [switch]   $NewSecrets,
     # Existing users (UPN or object id) to use instead of creating poc-claims-user<n>@<domain>.
     [string]   $User1,
     [string]   $User2,
@@ -86,18 +112,37 @@ $appsPath   = Join-Path $root "appsettings.json"
 # Set-PdpAgent, Set-PdpEntity, Remove-PdpEntity
 . (Join-Path $PSScriptRoot "GatewayConfigFiles.ps1")
 
-$TenantId        = Resolve-Setting $TenantId        "TenantId"        $appsPath "HostApplication:TenantId", "AgentBlueprint:TenantId"
-$ClaimsApiAppId  = Resolve-Setting $ClaimsApiAppId  "ClaimsApiAppId"  $appsPath "DownstreamApis:ClaimsApiAsAgent:Scopes:0"
-$HostAppId       = Resolve-Setting $HostAppId       "HostAppId"       $appsPath "HostApplication:ClientId"
-$BlueprintAppId  = Resolve-Setting $BlueprintAppId  "BlueprintAppId"  $appsPath "AgentBlueprint:ClientId"
-# -TestAgents creates Agent1 when AgentIdentity:ClientId is still a placeholder.
-$AgentIdentityId = if ($TestAgents) {
-    try { Resolve-Setting $AgentIdentityId "AgentIdentityId" $appsPath "AgentIdentity:ClientId" } catch { "" }
+if ($SetupAll) { $TestAppRegs = $true; $TestAgents = $true; $TestUsers = $true }
+
+# -TestAppRegs starts from nothing: appsettings.json is created from the sample, and every app id
+# that is still a placeholder is created (step 0) instead of being required here.
+if ($TestAppRegs -and (Initialize-AppSettings $appsPath)) {
+    Write-Host "Created appsettings.json from appsettings.sample.json" -ForegroundColor Green
 }
+function Resolve-Optional([string] $Value, [string] $Parameter, [string[]] $Keys) {
+    try { Resolve-Setting $Value $Parameter $appsPath $Keys } catch { "" }
+}
+if ($TestAppRegs) {
+    # Without a tenant id the signed-in account's tenant is used (and written to appsettings.json).
+    $TenantId       = Resolve-Optional $TenantId       "TenantId"       "HostApplication:TenantId", "AgentBlueprint:TenantId"
+    $ClaimsApiAppId = Resolve-Optional $ClaimsApiAppId "ClaimsApiAppId" "DownstreamApis:ClaimsApiAsAgent:Scopes:0"
+    $HostAppId      = Resolve-Optional $HostAppId      "HostAppId"      "HostApplication:ClientId"
+    $BlueprintAppId = Resolve-Optional $BlueprintAppId "BlueprintAppId" "AgentBlueprint:ClientId"
+}
+else {
+    $TenantId       = Resolve-Setting $TenantId       "TenantId"       $appsPath "HostApplication:TenantId", "AgentBlueprint:TenantId"
+    $ClaimsApiAppId = Resolve-Setting $ClaimsApiAppId "ClaimsApiAppId" $appsPath "DownstreamApis:ClaimsApiAsAgent:Scopes:0"
+    $HostAppId      = Resolve-Setting $HostAppId      "HostAppId"      $appsPath "HostApplication:ClientId"
+    $BlueprintAppId = Resolve-Setting $BlueprintAppId "BlueprintAppId" $appsPath "AgentBlueprint:ClientId"
+}
+# -TestAgents creates Agent1 when AgentIdentity:ClientId is still a placeholder; -TestAppRegs alone
+# may run before any agent exists.
+$AgentIdentityId = if ($TestAgents -or $TestAppRegs) { Resolve-Optional $AgentIdentityId "AgentIdentityId" "AgentIdentity:ClientId" }
 else { Resolve-Setting $AgentIdentityId "AgentIdentityId" $appsPath "AgentIdentity:ClientId" }
-# The MCP server (created by Configure-McpEntra.ps1) is needed only for agent grants on it.
+# The MCP server (created by Configure-McpEntra.ps1, or by -TestAppRegs after step 2) is needed only
+# for agent grants on it.
 $needsMcp = ($TestAgents -or $NewAgent.Count -gt 0) -and -not $SkipMcpPermissions
-if ($needsMcp) {
+if ($needsMcp -and -not $TestAppRegs) {
     $McpAppId = Resolve-Setting $McpAppId "McpAppId" $appsPath "McpServer:ClientId"
 }
 
@@ -108,30 +153,24 @@ $scopes = @(
     "AppRoleAssignment.ReadWrite.All",
     "User.Read"
 )
+if ($TestAppRegs) {
+    # App registrations, the blueprint, its principal and secret (docs: "Create an agent identity blueprint").
+    $scopes += @("Application.ReadWrite.All", "AgentIdentityBlueprint.Create", "AgentIdentityBlueprint.Read.All",
+                 "AgentIdentityBlueprint.AddRemoveCreds.All", "AgentIdentityBlueprintPrincipal.Create")
+}
 if ($TestUsers) {
     # Users, groups, and the blueprint / agent user assignments (Set-AgentUserAccess.ps1).
     $scopes += @("User.ReadWrite.All", "Group.ReadWrite.All", "GroupMember.ReadWrite.All",
                  "AgentIdentityBlueprintPrincipal.ReadWrite.All", "User.ReadBasic.All", "GroupMember.Read.All")
 }
 Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-Connect-MgGraph -TenantId $TenantId -NoWelcome -Scopes $scopes
-
-$claimsApiSp = Get-MgServicePrincipal -Filter "appId eq '$ClaimsApiAppId'"
-$hostSp      = Get-MgServicePrincipal -Filter "appId eq '$HostAppId'"
-$blueprintSp = Get-MgServicePrincipal -Filter "appId eq '$BlueprintAppId'"
-if (-not $claimsApiSp) { throw "No service principal for Claims API $ClaimsApiAppId. Open its Enterprise application once." }
-if (-not $hostSp)      { throw "No service principal for host app $HostAppId." }
-if (-not $blueprintSp) { throw "No blueprint principal for $BlueprintAppId (docs/entra-setup.md 4C.1)." }
-$mcpSp = $null
-if ($needsMcp) {
-    $mcpSp = Get-MgServicePrincipal -Filter "appId eq '$McpAppId'"
-    if (-not $mcpSp) { throw "No service principal for the MCP server $McpAppId (run Configure-McpEntra.ps1 first)." }
+$connect = @{ NoWelcome = $true; Scopes = $scopes }
+if ($TenantId) { $connect.TenantId = $TenantId }
+Connect-MgGraph @connect
+if (-not $TenantId) {
+    $TenantId = (Get-MgContext).TenantId
+    Write-Host "Tenant (from the signed-in account): $TenantId" -ForegroundColor Green
 }
-
-Write-Host ("Claims API SP  : {0}  ({1})" -f $claimsApiSp.Id, $claimsApiSp.DisplayName)
-Write-Host ("Host app SP    : {0}  ({1})" -f $hostSp.Id, $hostSp.DisplayName)
-Write-Host ("Blueprint SP   : {0}  ({1})" -f $blueprintSp.Id, $blueprintSp.DisplayName)
-Write-Host ("Agent identity : {0}" -f $(if ($AgentIdentityId) { $AgentIdentityId } else { "(not set; -TestAgents creates it)" }))
 
 # Delegated grants go through Invoke-MgGraphRequest (Microsoft.Graph.Authentication), so the script
 # does not depend on the Identity.SignIns module auto-loading.
@@ -172,15 +211,16 @@ function Set-AppRole([string] $PrincipalId, $ResourceSp, [string] $RoleValue, [s
     Write-Host "    assigned app role $RoleValue ($Label)" -ForegroundColor Green
 }
 
-# A just-created agent identity takes a while to replicate in the directory: until then Graph answers
-# 404 Request_ResourceNotFound for it, and even once one read succeeds another replica may still 404.
-# Runs $Action, retrying 404s every 10 s for up to 2 minutes.
+# A just-created agent identity (or app registration) takes a while to replicate in the directory:
+# until then Graph answers 404 Request_ResourceNotFound for it (or, creating a service principal,
+# "does not reference a valid application object"), and even once one read succeeds another replica
+# may still 404. Runs $Action, retrying those every 10 s for up to 2 minutes.
 function Invoke-WhenReplicated([string] $PrincipalId, [scriptblock] $Action) {
     for ($attempt = 1; ; $attempt++) {
         try { & $Action; return }
         catch {
             $message = "$($_.Exception.Message) $($_.ErrorDetails)"
-            if ($attempt -ge 12 -or $message -notmatch "Request_ResourceNotFound|does not exist|404") { throw }
+            if ($attempt -ge 12 -or $message -notmatch "Request_ResourceNotFound|does not exist|valid application object|404") { throw }
             Write-Host "    $PrincipalId not replicated yet, retrying in 10 s ($attempt/12)" -ForegroundColor DarkGray
             Start-Sleep -Seconds 10
         }
@@ -194,11 +234,23 @@ function Get-BlueprintHeaders {
     if (-not $script:bpHeaders) {
         $blueprintSecret = (Read-JsonWithComments $appsPath).AgentBlueprint.ClientCredentials[0].ClientSecret
         if (-not (Test-ConfiguredId $blueprintSecret)) { throw "AgentBlueprint:ClientCredentials[0]:ClientSecret is not set in appsettings.json." }
-        $tokenResponse = Invoke-RestMethod -Method POST -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -Body @{
-            grant_type    = "client_credentials"
-            client_id     = $BlueprintAppId
-            client_secret = $blueprintSecret
-            scope         = "https://graph.microsoft.com/.default"
+        # A blueprint or secret created moments ago (-TestAppRegs) is not known to the token service
+        # yet (AADSTS700016 / AADSTS7000215): retry every 10 s for up to 2 minutes.
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                $tokenResponse = Invoke-RestMethod -Method POST -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -Body @{
+                    grant_type    = "client_credentials"
+                    client_id     = $BlueprintAppId
+                    client_secret = $blueprintSecret
+                    scope         = "https://graph.microsoft.com/.default"
+                }
+                break
+            }
+            catch {
+                if ($attempt -ge 12 -or "$($_.Exception.Message) $($_.ErrorDetails)" -notmatch "AADSTS700016|AADSTS7000215|invalid_client|unauthorized_client") { throw }
+                Write-Host "    blueprint credential not active yet, retrying in 10 s ($attempt/12)" -ForegroundColor DarkGray
+                Start-Sleep -Seconds 10
+            }
         }
         $script:bpHeaders = @{ Authorization = "Bearer $($tokenResponse.access_token)"; "OData-Version" = "4.0" }
     }
@@ -217,10 +269,16 @@ function Rename-AgentIdentity([string] $Id, [string] $From, [string] $To) {
     catch { Write-Host "    could not rename '$From' to '$To' (rename it in the Entra admin center): $($_.Exception.Message)" -ForegroundColor Yellow }
 }
 
+# The signed-in admin (sponsor of created agents and of the blueprint).
+$script:me = $null
+function Get-Me {
+    if (-not $script:me) { $script:me = Invoke-MgGraphRequest -Method GET -Uri "$graph/me?`$select=id,userPrincipalName" }
+    $script:me
+}
+
 # Finds the agent identity with this display name (or one of its older names) under the blueprint,
 # or creates it (sponsor: the signed-in admin). Returns its id (for agent identities the app id
 # equals the object id).
-$script:me = $null
 function Use-AgentIdentity([string] $Name, [string[]] $OldNames = @()) {
     $all = @((Invoke-RestMethod -Headers (Get-BlueprintHeaders) `
         -Uri ("$graph/servicePrincipals/microsoft.graph.agentIdentity?`$filter=agentIdentityBlueprintId eq '$BlueprintAppId'&`$select=id,appId,displayName,accountEnabled")).value)
@@ -231,15 +289,15 @@ function Use-AgentIdentity([string] $Name, [string[]] $OldNames = @()) {
         Rename-AgentIdentity $existing.id $existing.displayName $Name
         return $existing.id
     }
-    if (-not $script:me) { $script:me = Invoke-MgGraphRequest -Method GET -Uri "$graph/me?`$select=id,userPrincipalName" }
+    $me = Get-Me
     $body = @{
         displayName              = $Name
         agentIdentityBlueprintId = $BlueprintAppId
-        "sponsors@odata.bind"    = @("$graph/users/$($script:me.id)")
+        "sponsors@odata.bind"    = @("$graph/users/$($me.id)")
     } | ConvertTo-Json
     $new = Invoke-RestMethod -Method POST -Headers (Get-BlueprintHeaders) -ContentType "application/json" `
         -Uri "$graph/servicePrincipals/microsoft.graph.agentIdentity" -Body $body
-    Write-Host "    created: $($new.id) (sponsor $($script:me.userPrincipalName))" -ForegroundColor Green
+    Write-Host "    created: $($new.id) (sponsor $($me.userPrincipalName))" -ForegroundColor Green
     return $new.id
 }
 
@@ -249,15 +307,250 @@ function Set-McpAgentGrants([string] $AgentId) {
     Invoke-WhenReplicated $AgentId { Set-DelegatedGrant $AgentId $mcpSp.Id "Mcp.Analyze" "-> MCP server" }
 }
 
+# ---------------------------------------------------------------------------
+# 0. App registrations (-TestAppRegs): POC Claims API, the agent identity blueprint, POC Claims Web
+#    (docs/entra-setup.md 4A-4C). The MCP server follows after step 2, once the host app holds its grants.
+# ---------------------------------------------------------------------------
+# The blueprint's application object id equals its app id in the tenants this was built on; step 0
+# replaces it with the id Graph returns.
+$blueprintObjectId = $BlueprintAppId
+$claimsApiName = "POC Claims API"
+$blueprintName = "POC Claims Analysis Agent Blueprint"
+$hostAppName   = "POC Claims Web"
+$hostRedirectUris = @("http://localhost:5094/signin-oidc", "https://localhost:7221/signin-oidc")   # Properties/launchSettings.json
+
+# The registration with the configured app id, or else the first one named $Name in $ListUri (or $null).
+function Find-Application([string] $Label, [string] $AppId, [string] $Name, [string] $ListUri) {
+    if (Test-ConfiguredId $AppId) {
+        try { return Invoke-MgGraphRequest -Method GET -Headers $graphHeaders -Uri "$graph/applications(appId='$AppId')" }
+        catch {
+            if ("$($_.Exception.Message) $($_.ErrorDetails)" -notmatch "Request_ResourceNotFound|does not exist|404") { throw }
+            throw "$Label $AppId (from appsettings.json or the parameter) does not exist in tenant $TenantId. Put its <placeholder> back to have '$Name' created."
+        }
+    }
+    @((Invoke-MgGraphRequest -Method GET -Headers $graphHeaders -Uri "$ListUri`?`$filter=displayName eq '$Name'").value) | Select-Object -First 1
+}
+
+function New-AppRegistration([string] $Name) {
+    $app = Invoke-MgGraphRequest -Method POST -ContentType "application/json" -Uri "$graph/applications" `
+        -Body (@{ displayName = $Name; signInAudience = "AzureADMyOrg" } | ConvertTo-Json)
+    Write-Host "    created: appId $($app.appId)" -ForegroundColor Green
+    $app
+}
+
+# Creates the service principal of $AppId when missing ($CreateUri differs for a blueprint principal).
+function Use-ServicePrincipal([string] $AppId, [string] $CreateUri = "$graph/servicePrincipals") {
+    $sp = @((Invoke-MgGraphRequest -Method GET -Uri "$graph/servicePrincipals?`$filter=appId eq '$AppId'&`$select=id").value) | Select-Object -First 1
+    if ($sp) { Write-Host "    service principal $($sp.id)"; return }
+    Invoke-WhenReplicated $AppId {
+        $new = Invoke-MgGraphRequest -Method POST -Headers $graphHeaders -ContentType "application/json" -Uri $CreateUri `
+            -Body (@{ appId = $AppId } | ConvertTo-Json)
+        Write-Host "    created service principal $($new.id)" -ForegroundColor Green
+    }
+}
+
+# $Existing plus the entries of $Wanted whose value it lacks (existing scopes and roles keep their ids).
+function Merge-ByValue($Existing, $Wanted) {
+    $list = @($Existing | Where-Object { $_ })
+    foreach ($w in $Wanted) { if (-not ($list | Where-Object { $_.value -eq $w.value })) { $list += $w } }
+    , $list
+}
+
+function New-ApiScope([string] $Value, [string] $Title, [string] $Description) {
+    @{
+        id = [guid]::NewGuid().ToString(); value = $Value; type = "User"; isEnabled = $true
+        adminConsentDisplayName = $Title; adminConsentDescription = $Description
+        userConsentDisplayName  = $Title; userConsentDescription  = $Description
+    }
+}
+
+function New-AppRoleDefinition([string] $Value, [string] $Description) {
+    @{ id = [guid]::NewGuid().ToString(); value = $Value; displayName = $Value; description = $Description
+       allowedMemberTypes = @("Application"); isEnabled = $true }
+}
+
+# v2 access tokens, api://<app id> first among the identifier URIs, and the given scopes / app roles
+# added to whatever the registration already has.
+function Set-ApiShape($App, [object[]] $Scopes, [object[]] $Roles = @(), [hashtable] $Extra = @{}) {
+    $uri = "$graph/applications/$($App.id)"
+    # v2 first: some identifier URI forms are only accepted once it is set.
+    Invoke-WhenReplicated $App.appId {
+        Invoke-MgGraphRequest -Method PATCH -ContentType "application/json" -Uri $uri `
+            -Body (@{ api = @{ requestedAccessTokenVersion = 2 } } | ConvertTo-Json -Depth 4) | Out-Null
+    }
+    $current = Invoke-MgGraphRequest -Method GET -Uri "$uri`?`$select=identifierUris,api,appRoles"
+    $idUri = "api://$($App.appId)"
+    $body = @{
+        identifierUris = @($idUri) + @(@($current.identifierUris) | Where-Object { $_ -and $_ -ne $idUri })
+        api            = @{ requestedAccessTokenVersion = 2; oauth2PermissionScopes = (Merge-ByValue $current.api.oauth2PermissionScopes $Scopes) }
+    }
+    if ($Roles.Count) { $body.appRoles = Merge-ByValue $current.appRoles $Roles }
+    foreach ($k in $Extra.Keys) { $body[$k] = $Extra[$k] }
+    Invoke-MgGraphRequest -Method PATCH -ContentType "application/json" -Uri $uri -Body ($body | ConvertTo-Json -Depth 8) | Out-Null
+    $check = Invoke-MgGraphRequest -Method GET -Uri "$uri`?`$select=identifierUris,api,appRoles"
+    Write-Host ("    v2 tokens; {0}; scopes: {1}{2}" -f ($check.identifierUris -join ", "),
+        (($check.api.oauth2PermissionScopes | ForEach-Object value) -join ", "),
+        $(if ($Roles.Count) { "; app roles: " + (($check.appRoles | ForEach-Object value) -join ", ") } else { "" })) -ForegroundColor Green
+}
+
+# Adds the missing names to the registration's access-token optional claims (other token types kept).
+function Add-AccessTokenClaims($App, [string[]] $Names) {
+    $optional = (Invoke-MgGraphRequest -Method GET -Uri "$graph/applications/$($App.id)?`$select=optionalClaims").optionalClaims
+    $existing = if ($optional) { $optional } else { @{} }
+    # Leading comma: return the array itself, so an empty list stays [] instead of becoming $null.
+    $claimsOf = { param($kind) if ($existing.ContainsKey($kind) -and $existing[$kind]) { , @($existing[$kind]) } else { , @() } }
+    $access = & $claimsOf "accessToken"
+    $missing = @($Names | Where-Object { $n = $_; -not ($access | Where-Object { $_.name -eq $n }) })
+    if ($missing.Count -eq 0) { Write-Host "    optional claims already in access tokens: $($Names -join ', ')" -ForegroundColor Green; return }
+    $body = @{ optionalClaims = @{
+        accessToken = @($access) + @($missing | ForEach-Object { @{ name = $_; essential = $false; additionalProperties = @() } })
+        idToken     = & $claimsOf "idToken"
+        saml2Token  = & $claimsOf "saml2Token"
+    } } | ConvertTo-Json -Depth 6
+    Invoke-MgGraphRequest -Method PATCH -ContentType "application/json" -Uri "$graph/applications/$($App.id)" -Body $body | Out-Null
+    Write-Host "    optional claims added to access tokens: $($missing -join ', ')" -ForegroundColor Green
+}
+
+# A client secret is minted for a new registration, with -NewSecrets, when appsettings.json does not
+# hold one (it cannot be read back from Entra), or when the registration has none. Returns the new
+# secret text, or $null when the existing one is kept.
+function Use-ClientSecret($App, [bool] $Created, [string] $SettingPath, [string] $Label) {
+    $local = Resolve-Optional "" "x" $SettingPath
+    $hasCredentials = [bool] $App["passwordCredentials"]   # index access: StrictMode throws on a missing key with dot access
+    if (-not ($Created -or $NewSecrets -or -not (Test-ConfiguredId $local) -or -not $hasCredentials)) {
+        Write-Host "    client secret kept (appsettings.json has one; -NewSecrets mints another)"
+        return $null
+    }
+    $body = @{ passwordCredential = @{ displayName = $Label; endDateTime = (Get-Date).ToUniversalTime().AddMonths(6).ToString("o") } } | ConvertTo-Json
+    $secret = Invoke-WhenReplicated $App.appId {
+        (Invoke-MgGraphRequest -Method POST -Headers $graphHeaders -ContentType "application/json" `
+            -Uri "$graph/applications/$($App.id)/addPassword" -Body $body).secretText
+    }
+    Write-Host "    minted a client secret (6 months), written to appsettings.json" -ForegroundColor Green
+    $secret
+}
+
+if ($TestAppRegs) {
+    Write-Host "`n[0] App registrations" -ForegroundColor Cyan
+    $me = Get-Me
+
+    # 4A. The resource: scopes for the delegated scenarios, app roles for the app-only ones.
+    Write-Host "`n    $claimsApiName (docs/entra-setup.md 4A)" -ForegroundColor Yellow
+    $app = Find-Application "Claims API" $ClaimsApiAppId $claimsApiName "$graph/applications"
+    if ($app) { Write-Host "    found: appId $($app.appId)" -ForegroundColor Green } else { $app = New-AppRegistration $claimsApiName }
+    $ClaimsApiAppId = $app.appId
+    Set-ApiShape $app -Scopes @(
+        New-ApiScope "Claims.Archive" "Archive claims as the signed-in user" "Allows the application to archive claims on behalf of the signed-in user."
+        New-ApiScope "Claims.Analyze" "Analyze claims as the signed-in user" "Allows the application to analyze claims on behalf of the signed-in user."
+    ) -Roles @(
+        New-AppRoleDefinition "Claims.Archive.All" "Allows the application to archive claims without a signed-in user."
+        New-AppRoleDefinition "Claims.Analyze.All" "Allows the application to analyze claims without a signed-in user."
+    )
+    # idtyp marks app-only tokens; the agent facet claims say "this caller is an agent of blueprint X" (4A.4-5).
+    try { Add-AccessTokenClaims $app @("idtyp", "xms_par_app_azp", "xms_act_fct", "xms_sub_fct") }
+    catch {
+        Write-Host "    Entra refused the agent facet claims, adding idtyp only (4A.5): $($_.Exception.Message)" -ForegroundColor Yellow
+        Add-AccessTokenClaims $app @("idtyp")
+    }
+    Use-ServicePrincipal $ClaimsApiAppId
+    Set-AppSettingList $appsPath "DownstreamApis" "Scopes" @("api://$ClaimsApiAppId/.default")
+    Set-JsonConfig (Join-Path $root "claims-api/config.json") @{ TENANT_ID = $TenantId; CLAIMS_API_APP_ID = $ClaimsApiAppId }
+    Write-Host "    appsettings.json DownstreamApis:*:Scopes, claims-api/config.json TENANT_ID + CLAIMS_API_APP_ID" -ForegroundColor Green
+
+    # 4C.1-2. The blueprint: the only agent object with a credential. Its URI and scope are step 1.
+    Write-Host "`n    $blueprintName (docs/entra-setup.md 4C.1-2)" -ForegroundColor Yellow
+    $bp = Find-Application "Blueprint" $BlueprintAppId $blueprintName "$graph/applications/microsoft.graph.agentIdentityBlueprint"
+    $bpCreated = -not $bp
+    if ($bp) { Write-Host "    found: appId $($bp.appId)" -ForegroundColor Green }
+    else {
+        $body = @{
+            "@odata.type"         = "Microsoft.Graph.AgentIdentityBlueprint"
+            displayName           = $blueprintName
+            "sponsors@odata.bind" = @("$graph/users/$($me.id)")
+            "owners@odata.bind"   = @("$graph/users/$($me.id)")
+        } | ConvertTo-Json
+        $bp = Invoke-MgGraphRequest -Method POST -Headers $graphHeaders -ContentType "application/json" `
+            -Uri "$graph/applications/microsoft.graph.agentIdentityBlueprint" -Body $body
+        Write-Host "    created: appId $($bp.appId) (sponsor and owner $($me.userPrincipalName))" -ForegroundColor Green
+    }
+    $BlueprintAppId = $bp.appId
+    $blueprintObjectId = $bp.id
+    Use-ServicePrincipal $BlueprintAppId "$graph/servicePrincipals/microsoft.graph.agentIdentityBlueprintPrincipal"
+    $secret = Use-ClientSecret $bp $bpCreated "AgentBlueprint:ClientCredentials:0:ClientSecret" "poc"
+    Set-AppSetting $appsPath "AgentBlueprint" "TenantId" $TenantId
+    Set-AppSetting $appsPath "AgentBlueprint" "ClientId" $BlueprintAppId
+    Set-AppSetting $appsPath "AgentBlueprint" "ApiScope" "api://$BlueprintAppId/access_agent"
+    if ($secret) { Set-AppSetting $appsPath "AgentBlueprint" "ClientSecret" $secret; $script:bpHeaders = $null }
+    Write-Host "    appsettings.json AgentBlueprint:TenantId, ClientId, ApiScope$(if ($secret) { ', ClientSecret' })" -ForegroundColor Green
+
+    # 4B.1-3. The host app: browser sign-in (auth code + secret) and its own access_as_user scope.
+    # Its grants on the Claims API and the blueprint are step 2.
+    Write-Host "`n    $hostAppName (docs/entra-setup.md 4B.1-3)" -ForegroundColor Yellow
+    $app = Find-Application "Host app" $HostAppId $hostAppName "$graph/applications"
+    $hostCreated = -not $app
+    if ($app) { Write-Host "    found: appId $($app.appId)" -ForegroundColor Green } else { $app = New-AppRegistration $hostAppName }
+    $HostAppId = $app.appId
+    $redirects = @($hostRedirectUris) + @(@($app.web.redirectUris) | Where-Object { $_ -and $hostRedirectUris -notcontains $_ })
+    Set-ApiShape $app -Scopes @(
+        New-ApiScope "access_as_user" "Access POC Claims Web as the signed-in user" "Allows the application to call POC Claims Web on behalf of the signed-in user."
+    ) -Extra @{ web = @{ redirectUris = $redirects } }
+    Write-Host "    redirect URIs: $($redirects -join ', ')" -ForegroundColor Green
+    Use-ServicePrincipal $HostAppId
+    $secret = Use-ClientSecret $app $hostCreated "HostApplication:ClientCredentials:0:ClientSecret" "poc-web"
+    Set-AppSetting $appsPath "HostApplication" "TenantId" $TenantId
+    Set-AppSetting $appsPath "HostApplication" "ClientId" $HostAppId
+    Set-AppSetting $appsPath "HostApplication" "ApiScope" "api://$HostAppId/access_as_user"
+    if ($secret) { Set-AppSetting $appsPath "HostApplication" "ClientSecret" $secret }
+    Write-Host "    appsettings.json HostApplication:TenantId, ClientId, ApiScope$(if ($secret) { ', ClientSecret' })" -ForegroundColor Green
+}
+
+# Service principals. Right after -TestAppRegs created or changed them they may not be readable (or
+# not show the new scopes and roles) yet, so they are polled for up to 2 minutes.
+function Get-ReadyServicePrincipal([string] $AppId, [string[]] $Roles = @(), [string[]] $Scopes = @()) {
+    $attempts = if ($TestAppRegs) { 12 } else { 1 }
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        $sp = Get-MgServicePrincipal -Filter "appId eq '$AppId'" -ErrorAction Stop | Select-Object -First 1
+        $ready = [bool] $sp
+        if ($sp) {
+            $haveRoles  = @($sp.AppRoles | ForEach-Object { $_.Value })
+            $haveScopes = @($sp.Oauth2PermissionScopes | ForEach-Object { $_.Value })
+            $ready = -not ($Roles | Where-Object { $haveRoles -notcontains $_ }) -and
+                     -not ($Scopes | Where-Object { $haveScopes -notcontains $_ })
+        }
+        if ($ready -or $attempt -eq $attempts) { return $sp }
+        Write-Host "    service principal of $AppId not up to date yet, retrying in 10 s ($attempt/$attempts)" -ForegroundColor DarkGray
+        Start-Sleep -Seconds 10
+    }
+}
+
+$claimsRoles  = if ($TestAppRegs) { @("Claims.Archive.All", "Claims.Analyze.All") } else { @() }
+$claimsScopes = if ($TestAppRegs) { @("Claims.Archive", "Claims.Analyze") } else { @() }
+$claimsApiSp = Get-ReadyServicePrincipal $ClaimsApiAppId $claimsRoles $claimsScopes
+$hostSp      = Get-ReadyServicePrincipal $HostAppId
+$blueprintSp = Get-ReadyServicePrincipal $BlueprintAppId
+if (-not $claimsApiSp) { throw "No service principal for Claims API $ClaimsApiAppId. Open its Enterprise application once." }
+if (-not $hostSp)      { throw "No service principal for host app $HostAppId." }
+if (-not $blueprintSp) { throw "No blueprint principal for $BlueprintAppId (docs/entra-setup.md 4C.1)." }
+$mcpSp = $null
+if ($needsMcp -and -not $TestAppRegs) {
+    $mcpSp = Get-MgServicePrincipal -Filter "appId eq '$McpAppId'"
+    if (-not $mcpSp) { throw "No service principal for the MCP server $McpAppId (run Configure-McpEntra.ps1 first)." }
+}
+
+Write-Host ("`nClaims API SP  : {0}  ({1})" -f $claimsApiSp.Id, $claimsApiSp.DisplayName)
+Write-Host ("Host app SP    : {0}  ({1})" -f $hostSp.Id, $hostSp.DisplayName)
+Write-Host ("Blueprint SP   : {0}  ({1})" -f $blueprintSp.Id, $blueprintSp.DisplayName)
+Write-Host ("Agent identity : {0}" -f $(if ($AgentIdentityId) { $AgentIdentityId } else { "(not set; -TestAgents creates it)" }))
+
 $pdpTable = Get-PdpTable $appsPath
-$pdpPending = "    PDP registry: storage not deployed yet (GatewayMcp:StorageConnectionString empty); run this script again after Deploy-GatewayPoc.ps1"
+$pdpPending ="    PDP registry: storage not deployed yet (GatewayMcp:StorageConnectionString empty); run this script again after Deploy-GatewayPoc.ps1"
 
 # ---------------------------------------------------------------------------
 # 1. Blueprint identifier URI + access_agent scope
 # ---------------------------------------------------------------------------
 Write-Host "`n[1] Blueprint identifier URI and access_agent scope" -ForegroundColor Cyan
 $bpApp = Invoke-MgGraphRequest -Method GET -Headers $graphHeaders `
-    -Uri "$graph/applications/$BlueprintAppId`?`$select=id,appId,displayName,identifierUris,api"
+    -Uri "$graph/applications/$blueprintObjectId`?`$select=id,appId,displayName,identifierUris,api"
 
 $expectedUri = "api://$BlueprintAppId"
 $existingScopes = @($bpApp.api.oauth2PermissionScopes)
@@ -287,10 +580,10 @@ else {
     } | ConvertTo-Json -Depth 8
 
     Invoke-MgGraphRequest -Method PATCH -Headers $graphHeaders -ContentType "application/json" `
-        -Uri "$graph/applications/$BlueprintAppId" -Body $body | Out-Null
+        -Uri "$graph/applications/$blueprintObjectId" -Body $body | Out-Null
 
     $check = Invoke-MgGraphRequest -Method GET -Headers $graphHeaders `
-        -Uri "$graph/applications/$BlueprintAppId`?`$select=identifierUris,api"
+        -Uri "$graph/applications/$blueprintObjectId`?`$select=identifierUris,api"
     Write-Host ("    set: {0}; scopes: {1}" -f ($check.identifierUris -join ", "), (($check.api.oauth2PermissionScopes | ForEach-Object value) -join ", ")) -ForegroundColor Green
 }
 
@@ -299,6 +592,54 @@ else {
 # ---------------------------------------------------------------------------
 Write-Host "`n[2] Host app delegated grant: access_agent on the blueprint" -ForegroundColor Cyan
 Set-DelegatedGrant $hostSp.Id $blueprintSp.Id "access_agent" "host app -> blueprint"
+
+if ($TestAppRegs) {
+    # docs/entra-setup.md 4B.4: scenario 1 (application) and 2 (delegated) on the Claims API, plus admin
+    # consent for the sign-in scopes, so test users get no consent prompt.
+    Set-AppRole        $hostSp.Id $claimsApiSp "Claims.Archive.All" "host app -> Claims API"
+    Set-DelegatedGrant $hostSp.Id $claimsApiSp.Id "Claims.Archive" "host app -> Claims API"
+    $graphSp = Get-MgServicePrincipal -Filter "appId eq '00000003-0000-0000-c000-000000000000'"
+    $signInScopes = @("openid", "profile", "offline_access", "User.Read")
+    foreach ($signInScope in $signInScopes) { Set-DelegatedGrant $hostSp.Id $graphSp.Id $signInScope "host app -> Microsoft Graph (sign-in)" }
+
+    # The registration's API permissions list (what the portal shows and admin consent covers) to match.
+    # Id of the scope / role with this value ($null when absent; such entries are skipped below).
+    $idOf = { param($items, $value) foreach ($i in @($items)) { if ($i -and $i.Value -eq $value) { return $i.Id } } }
+    $bpScopeId = $null
+    foreach ($sc in @((Invoke-MgGraphRequest -Method GET -Headers $graphHeaders -Uri "$graph/applications/$blueprintObjectId`?`$select=api").api.oauth2PermissionScopes)) {
+        if ($sc -and $sc["value"] -eq "access_agent") { $bpScopeId = $sc["id"] }
+    }
+    $wanted = [ordered] @{
+        $ClaimsApiAppId = @(@{ id = (& $idOf $claimsApiSp.Oauth2PermissionScopes "Claims.Archive"); type = "Scope" },
+                            @{ id = (& $idOf $claimsApiSp.AppRoles "Claims.Archive.All"); type = "Role" })
+        $BlueprintAppId = @(@{ id = $bpScopeId; type = "Scope" })
+        "00000003-0000-0000-c000-000000000000" = @($signInScopes | ForEach-Object { @{ id = (& $idOf $graphSp.Oauth2PermissionScopes $_); type = "Scope" } })
+    }
+    $hostReg = Invoke-MgGraphRequest -Method GET -Uri "$graph/applications(appId='$HostAppId')?`$select=id,requiredResourceAccess"
+    $access = @(@($hostReg.requiredResourceAccess) | Where-Object { $_ -and -not $wanted.Contains($_.resourceAppId) })
+    foreach ($resource in $wanted.Keys) {
+        $have = @(@($hostReg.requiredResourceAccess) | Where-Object { $_ -and $_.resourceAppId -eq $resource } | ForEach-Object { $_.resourceAccess })
+        $list = @($have | Where-Object { $_ })
+        foreach ($w in $wanted[$resource]) { if ($w.id -and -not ($list | Where-Object { $_.id -eq $w.id })) { $list += $w } }
+        $access += @{ resourceAppId = $resource; resourceAccess = $list }
+    }
+    Invoke-MgGraphRequest -Method PATCH -ContentType "application/json" -Uri "$graph/applications/$($hostReg.id)" `
+        -Body (@{ requiredResourceAccess = $access } | ConvertTo-Json -Depth 6) | Out-Null
+    Write-Host "    API permissions list: Claims.Archive, Claims.Archive.All, access_agent, $($signInScopes -join ', ')" -ForegroundColor Green
+
+    # The MCP server: its own registration, grants on the Claims API, and the host app's grants on it.
+    # Agent grants on it come with the agents (step 3, Set-McpAgentGrants).
+    Write-Host "`n[2b] MCP server registration (Configure-McpEntra.ps1 -WriteConfig)" -ForegroundColor Cyan
+    $mcpArgs = @{ TenantId = $TenantId; ClaimsApiAppId = $ClaimsApiAppId; HostAppId = $HostAppId; WriteConfig = $true }
+    if (Test-ConfiguredId $AgentIdentityId) { $mcpArgs.AgentIdentityId = $AgentIdentityId }
+    if ($NewSecrets) { $mcpArgs.NewSecret = $true }
+    & (Join-Path $PSScriptRoot "Configure-McpEntra.ps1") @mcpArgs
+    $McpAppId = Resolve-Setting "" "McpAppId" $appsPath "McpServer:ClientId"
+    if ($needsMcp) {
+        $mcpSp = Get-ReadyServicePrincipal $McpAppId @("Mcp.Analyze.All") @("Mcp.Analyze")
+        if (-not $mcpSp) { throw "No service principal for the MCP server $McpAppId." }
+    }
+}
 
 # ---------------------------------------------------------------------------
 # 3. Test agents (docs/test-identities.md)
@@ -503,6 +844,7 @@ if ($TestUsers) {
 # ---------------------------------------------------------------------------
 if ($AssignAgentPermissions -and -not $TestAgents) {
     Write-Host "`n[5] Direct grants on the agent identity" -ForegroundColor Cyan
+    if (-not (Test-ConfiguredId $AgentIdentityId)) { throw "No agent identity yet: pass -AgentIdentityId, or use -TestAgents to create Agent1." }
     Set-AppRole $AgentIdentityId $claimsApiSp "Claims.Analyze.All" "agent identity -> Claims API"
     Set-DelegatedGrant $AgentIdentityId $claimsApiSp.Id "Claims.Analyze" "agent identity -> Claims API"
 }
@@ -556,19 +898,19 @@ function Show-Grants([string] $Label, [string] $PrincipalId) {
 }
 
 Write-Host "`n[7] Current grants" -ForegroundColor Cyan
-Show-Grants "Agent identity (Agent1)" $AgentIdentityId
+if (Test-ConfiguredId $AgentIdentityId) { Show-Grants "Agent identity (Agent1)" $AgentIdentityId }
 Show-Grants "Blueprint principal" $blueprintSp.Id
 Show-Grants "Host app" $hostSp.Id
 
 $inheritable = Invoke-MgGraphRequest -Method GET -Headers $graphHeaders `
-    -Uri "$graph/applications/microsoft.graph.agentIdentityBlueprint/$BlueprintAppId/inheritablePermissions" -ErrorAction SilentlyContinue
+    -Uri "$graph/applications/microsoft.graph.agentIdentityBlueprint/$blueprintObjectId/inheritablePermissions" -ErrorAction SilentlyContinue
 $inheritableForClaims = @($inheritable.value | Where-Object { $_.resourceAppId -eq $ClaimsApiAppId })
 Write-Host ("`n    Blueprint inheritablePermissions for Claims API: {0}" -f ($(if ($inheritableForClaims.Count) { "yes (scopes: $($inheritableForClaims[0].inheritableScopes.kind), roles: $($inheritableForClaims[0].inheritableRoles.kind))" } else { "none" })))
 
 if (-not ($TestAgents -or $AssignAgentPermissions -or $NewAgent.Count)) {
-    Write-Host "`nRe-run with -AssignAgentPermissions for the direct Claims API grants on the agent identity (docs/entra-setup.md 4D), or with -TestAgents -TestUsers for the full test setup (docs/test-identities.md)." -ForegroundColor DarkGray
+    Write-Host "`nRe-run with -AssignAgentPermissions for the direct Claims API grants on the agent identity (docs/entra-setup.md 4D), or with -SetupAll (or -TestAgents -TestUsers) for the full test setup (docs/test-identities.md)." -ForegroundColor DarkGray
 }
-if ($TestAgents -or $TestUsers -or $NewAgent.Count) {
+if ($TestAppRegs -or $TestAgents -or $TestUsers -or $NewAgent.Count) {
     Write-Host "`nRestart the web app to pick up appsettings.json changes (agent drop-down, PDP presets)." -ForegroundColor Cyan
 }
 if ($TestUsers) {

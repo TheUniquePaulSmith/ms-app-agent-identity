@@ -16,7 +16,7 @@
       5. Adds the baseline rows of the PDP entity registry (Azure Table PdpEntities) that are
          still missing: blueprint, host app, MCP server, groups, gateway agent.
 
-    Order:  .\Configure\Configure-Entra.ps1 -TestAgents -TestUsers   (test agents, users, groups, ids into appsettings.json)
+    Order:  .\Configure\Configure-Entra.ps1 -SetupAll            (app registrations, test agents, users, groups, ids into appsettings.json)
             .\Configure\Deploy-GatewayPoc.ps1 -NamePrefix <prefix> -PublisherEmail you@contoso.com
             .\Configure\Configure-Entra.ps1 -TestAgents -TestUsers   (again: writes them into the PDP registry)
             .\Configure\Configure-GatewayEntra.ps1                   (MCP optional claims, managed identity Graph permissions)

@@ -10,6 +10,9 @@ groups, Cedar policies). One script creates them all:
 .\Configure\Configure-Entra.ps1 -TestAgents -TestUsers
 ```
 
+On a new tenant, `-SetupAll` (`-TestAppRegs -TestAgents -TestUsers`) also creates the app
+registrations they depend on ([Entra setup](entra-setup.md)).
+
 Run it again after `Deploy-GatewayPoc.ps1`: the PDP registry (Azure Table `PdpEntities`) only exists
 once the gateway is deployed, and the second run writes the agents, group object ids and local
 members into it. Every step is idempotent.

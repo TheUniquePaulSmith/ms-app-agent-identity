@@ -15,10 +15,15 @@
          all users (on-behalf-of path).
       3. Callers -> MCP server: agent identity gets Mcp.Analyze.All + Mcp.Analyze; host app gets
          Mcp.Archive.All + Mcp.Archive. The agent still cannot archive and the host still cannot
-         analyze, but the decision now happens at the MCP server.
-      4. Prints the values for claims-mcp/config.json and the McpServer section of appsettings.json.
+         analyze, but the decision now happens at the MCP server. Without an agent identity yet
+         (AgentIdentity:ClientId still a placeholder) the agent part is skipped:
+         Configure-Entra.ps1 -TestAgents grants it when it creates Agent1.
+      4. Prints the values for claims-mcp/config.json and the McpServer section of appsettings.json;
+         with -WriteConfig writes them there instead (McpServer:ClientId and :Scope, GatewayMcp:Scope,
+         claims-mcp/config.json). A secret is minted when claims-mcp/config.json has none yet.
 
-    Run it in a normal PowerShell 7 prompt:  .\Configure\Configure-McpEntra.ps1 [-PublicUrl https://mcp.contoso.com] [-NewSecret]
+    Run it in a normal PowerShell 7 prompt:  .\Configure\Configure-McpEntra.ps1 [-PublicUrl https://mcp.contoso.com] [-NewSecret] [-WriteConfig]
+    Configure-Entra.ps1 -TestAppRegs (or -SetupAll) runs it with -WriteConfig.
 
 .NOTES
     Needs the Microsoft.Graph PowerShell module and a user who can create app registrations and
@@ -33,28 +38,44 @@ param(
     [string] $AgentIdentityId,
     [string] $DisplayName     = "POC Claims MCP Server",
     [string] $PublicUrl       = "",
-    [switch] $NewSecret
+    [switch] $NewSecret,
+    # Write the ids (and a new secret) into appsettings.json and claims-mcp/config.json.
+    [switch] $WriteConfig
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $graph = "https://graph.microsoft.com/v1.0"
-$appsPath = Join-Path (Split-Path -Parent $PSScriptRoot) "appsettings.json"
+$root     = Split-Path -Parent $PSScriptRoot
+$appsPath = Join-Path $root "appsettings.json"
+$mcpConfigPath = Join-Path $root "claims-mcp/config.json"
 
-# Read-JsonWithComments, Resolve-Setting
+# Read-JsonWithComments, Resolve-Setting, Set-AppSetting, Set-JsonConfig
 . (Join-Path $PSScriptRoot "GatewayConfigFiles.ps1")
 
 $TenantId        = Resolve-Setting $TenantId        "TenantId"        $appsPath "HostApplication:TenantId", "AgentBlueprint:TenantId"
 $ClaimsApiAppId  = Resolve-Setting $ClaimsApiAppId  "ClaimsApiAppId"  $appsPath "DownstreamApis:ClaimsApiAsAgent:Scopes:0"
 $HostAppId       = Resolve-Setting $HostAppId       "HostAppId"       $appsPath "HostApplication:ClientId"
-$AgentIdentityId = Resolve-Setting $AgentIdentityId "AgentIdentityId" $appsPath "AgentIdentity:ClientId"
+# Optional: before Configure-Entra.ps1 -TestAgents has created Agent1 there is no agent to grant yet.
+$AgentIdentityId = try { Resolve-Setting $AgentIdentityId "AgentIdentityId" $appsPath "AgentIdentity:ClientId" } catch { "" }
 
-Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-Connect-MgGraph -TenantId $TenantId -NoWelcome -Scopes @(
+$requiredScopes = @(
     "Application.ReadWrite.All",
     "AppRoleAssignment.ReadWrite.All",
     "DelegatedPermissionGrant.ReadWrite.All"
 )
+# Reuse the current Graph session (for example Configure-Entra.ps1 -TestAppRegs calling this script)
+# when it already holds every scope; otherwise sign in.
+$context = Get-MgContext
+$sameTenant = $context -and (-not ($TenantId -as [guid]) -or $context.TenantId -eq $TenantId)
+$missingScopes = @(if ($context) { $requiredScopes | Where-Object { @($context.Scopes) -notcontains $_ } } else { $requiredScopes })
+if ($sameTenant -and $missingScopes.Count -eq 0) {
+    Write-Host "Reusing Microsoft Graph session ($($context.Account))" -ForegroundColor Cyan
+}
+else {
+    Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
+    Connect-MgGraph -TenantId $TenantId -NoWelcome -Scopes $requiredScopes
+}
 
 $claimsApiSp = Get-MgServicePrincipal -Filter "appId eq '$ClaimsApiAppId'"
 $hostSp      = Get-MgServicePrincipal -Filter "appId eq '$HostAppId'"
@@ -197,7 +218,11 @@ $mcpSp = Get-MgServicePrincipal -ServicePrincipalId $mcpSp.Id
 
 $secretText = $null
 $app = Get-MgApplication -ApplicationId $app.Id
-if ($NewSecret -or -not $app.PasswordCredentials) {
+# With -WriteConfig a secret is also minted when claims-mcp/config.json does not hold one yet
+# (an existing secret cannot be read back from Entra).
+$configHasSecret = (Test-Path $mcpConfigPath) -and
+    (Test-ConfiguredId ((Get-Content $mcpConfigPath -Raw | ConvertFrom-Json -AsHashtable)["MCP_CLIENT_SECRET"]))
+if ($NewSecret -or -not $app.PasswordCredentials -or ($WriteConfig -and -not $configHasSecret)) {
     $secret = Add-MgApplicationPassword -ApplicationId $app.Id -PasswordCredential @{ displayName = "poc-mcp"; endDateTime = (Get-Date).AddMonths(6) }
     $secretText = $secret.SecretText
     Write-Host "    minted client secret (shown once below)" -ForegroundColor Green
@@ -218,8 +243,13 @@ Ensure-DelegatedGrant    "MCP server" $mcpSp.Id $claimsApiSp @("Claims.Analyze",
 # 3. Callers -> MCP server (what the inbound token can carry)
 # ---------------------------------------------------------------------------
 Write-Host "`n[3] Caller permissions on the MCP server" -ForegroundColor Cyan
-Ensure-AppRoleAssignment "agent identity" $AgentIdentityId $mcpSp "Mcp.Analyze.All"
-Ensure-DelegatedGrant    "agent identity" $AgentIdentityId $mcpSp @("Mcp.Analyze")
+if (Test-ConfiguredId $AgentIdentityId) {
+    Ensure-AppRoleAssignment "agent identity" $AgentIdentityId $mcpSp "Mcp.Analyze.All"
+    Ensure-DelegatedGrant    "agent identity" $AgentIdentityId $mcpSp @("Mcp.Analyze")
+}
+else {
+    Write-Host "    agent identity: none yet (Configure-Entra.ps1 -TestAgents grants Agent1 when it creates it)" -ForegroundColor DarkGray
+}
 Ensure-AppRoleAssignment "host app"       $hostSp.Id       $mcpSp "Mcp.Archive.All"
 Ensure-DelegatedGrant    "host app"       $hostSp.Id       $mcpSp @("Mcp.Archive")
 
@@ -227,6 +257,19 @@ Ensure-DelegatedGrant    "host app"       $hostSp.Id       $mcpSp @("Mcp.Archive
 # 4. Values to paste
 # ---------------------------------------------------------------------------
 Write-Host "`n[4] Configuration" -ForegroundColor Cyan
+if ($WriteConfig) {
+    $mcpScope = "api://$mcpAppId/.default"
+    Set-AppSetting $appsPath "McpServer"  "ClientId" $mcpAppId
+    Set-AppSetting $appsPath "McpServer"  "Scope"    $mcpScope
+    Set-AppSetting $appsPath "GatewayMcp" "Scope"    $mcpScope
+    Write-Host "    appsettings.json McpServer:ClientId, McpServer:Scope, GatewayMcp:Scope = $mcpScope" -ForegroundColor Green
+    $values = @{ TENANT_ID = $TenantId; MCP_CLIENT_ID = $mcpAppId; CLAIMS_API_APP_ID = $ClaimsApiAppId }
+    if ($secretText) { $values.MCP_CLIENT_SECRET = $secretText }
+    Set-JsonConfig $mcpConfigPath $values
+    Write-Host ("    claims-mcp/config.json TENANT_ID, MCP_CLIENT_ID, CLAIMS_API_APP_ID{0}" -f $(if ($secretText) { ", MCP_CLIENT_SECRET (new)" } else { " (secret kept)" })) -ForegroundColor Green
+    Write-Host "`nDone. Grants can take a minute or two to show up in new tokens." -ForegroundColor Cyan
+    return
+}
 Write-Host "    claims-mcp/config.json (or env vars):"
 Write-Host "      MCP_CLIENT_ID     = $mcpAppId"
 Write-Host ("      MCP_CLIENT_SECRET = {0}" -f ($(if ($secretText) { $secretText } else { "<existing secret>" })))

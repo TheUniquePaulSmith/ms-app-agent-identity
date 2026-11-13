@@ -102,7 +102,7 @@ You also need a Microsoft Entra tenant and an account with these roles (or Globa
 | --- | --- |
 | Agent ID Administrator | Creating the agent blueprint, its secret and agent identities |
 | Cloud Application Administrator | App registrations, app roles, admin consent and application permissions |
-| User Administrator and Groups Administrator | Only for the test users and the PDP's groups (`Configure-Entra.ps1 -TestUsers`) |
+| User Administrator and Groups Administrator | Only for the test users and the PDP's groups (`Configure-Entra.ps1 -TestUsers` / `-SetupAll`) |
 | Owner or User Access Administrator on a subscription | Only for the cloud-hosted mock (the Bicep template creates role assignments) |
 
 A model is optional: the agent loop runs against the bundled `fake-llm/`, or any
@@ -112,11 +112,19 @@ OpenAI-compatible endpoint with tool calling (for example vLLM).
 
 Check the [prerequisites](#prerequisites) first.
 
-1. Create the Entra objects: [Entra setup](docs/entra-setup.md). The test users and agents
-   (User1-4, Agent1-4) come from one script, `.\Configure\Configure-Entra.ps1 -TestAgents -TestUsers`
-   ([Test identities](docs/test-identities.md)).
-2. Create your local settings from the templates and fill in every `<placeholder>`
-   ([details](docs/run-locally.md)):
+1. Create the Entra objects and your local settings with one script:
+   ```powershell
+   .\Configure\Configure-Entra.ps1 -SetupAll -TenantId <tenant id>
+   ```
+   `-SetupAll` is `-TestAppRegs -TestAgents -TestUsers`: the app registrations (Claims API,
+   blueprint, host app, MCP server), the test agents and users (Agent1-4, User1-4,
+   [Test identities](docs/test-identities.md)) and the PDP groups. It creates `appsettings.json`,
+   `claims-api/config.json` and `claims-mcp/config.json` from the templates and writes every id and
+   secret into them. [Entra setup](docs/entra-setup.md) explains each object and how to create
+   them by hand.
+2. Or, with app registrations you made yourself: create your local settings from the templates,
+   fill in every `<placeholder>` ([details](docs/run-locally.md)), then run
+   `Configure-Entra.ps1 -TestAgents -TestUsers`:
    ```powershell
    Copy-Item appsettings.sample.json appsettings.json
    Copy-Item claims-api/config.sample.json claims-api/config.json

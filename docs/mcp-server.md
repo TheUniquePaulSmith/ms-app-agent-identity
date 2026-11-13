@@ -15,7 +15,9 @@ MCP server, and the first version of this POC met only the first:
 ## 8A. Entra objects
 
 `Configure/Configure-McpEntra.ps1` creates and wires everything (idempotent; run it from a normal
-PowerShell 7 prompt):
+PowerShell 7 prompt). `Configure-Entra.ps1 -TestAppRegs` (or `-SetupAll`) runs it for you with
+`-WriteConfig`, which writes the ids and a new secret into `appsettings.json` and
+`claims-mcp/config.json` instead of printing them:
 
 | Object | What the script does |
 | --- | --- |

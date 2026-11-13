@@ -4,14 +4,34 @@
 
 Portal where the portal can do it, Microsoft Graph PowerShell where it cannot.
 
-Shortcut: `Configure/Configure-Entra.ps1` performs the Graph-only parts ([4C](#4c-poc-claims-analysis-agent-blueprint).3 blueprint URI and
-scope, [4B](#4b-poc-claims-web-the-host-application) host-app grant on the blueprint, [4D](#4d-poc-claims-analysis-agent-the-agent-identity) direct agent grants with `-AssignAgentPermissions`)
-and prints every grant the agent identity, blueprint principal and host app currently hold.
+Shortcut: `Configure/Configure-Entra.ps1 -SetupAll` does everything on this page (and
+[section 8A](mcp-server.md)) in one run:
+
+```powershell
+.\Configure\Configure-Entra.ps1 -SetupAll -TenantId <tenant id>
+```
+
+`-SetupAll` is the same as `-TestAppRegs -TestAgents -TestUsers`:
+
+- `-TestAppRegs` creates the app registrations of [4A](#4a-poc-claims-api-the-resource), [4B](#4b-poc-claims-web-the-host-application) and [4C](#4c-poc-claims-analysis-agent-blueprint), or finds them by
+  the app id in `appsettings.json` or by display name. It sets their scopes, app roles, optional
+  claims, redirect URIs, client secrets and grants, then creates the MCP server registration
+  (`Configure-McpEntra.ps1 -WriteConfig`). It creates `appsettings.json`, `claims-api/config.json`
+  and `claims-mcp/config.json` from the templates when they are missing, and writes the ids and
+  secrets into them. Existing secrets are kept unless you add `-NewSecrets`. Without `-TenantId`
+  (and no tenant in `appsettings.json`) it uses the tenant of the account you sign in with.
+- `-TestAgents -TestUsers` create the test agents, users and groups of [4F](#4f-test-users-and-agents).
+
+Each switch also works on its own. With none of them, the script performs only the Graph-only parts
+([4C](#4c-poc-claims-analysis-agent-blueprint).3 blueprint URI and scope, [4B](#4b-poc-claims-web-the-host-application) host-app grant on the blueprint, [4D](#4d-poc-claims-analysis-agent-the-agent-identity) direct agent
+grants with `-AssignAgentPermissions`). Every run prints the grants that the agent identity, the
+blueprint principal and the host app currently hold.
 Run it from a normal PowerShell 7 prompt, not through nested `pwsh -Command` quoting.
-It reads the tenant and app ids from your local `appsettings.json` (create it first: [section 5](run-locally.md),
-step 1), or takes them as parameters (`-TenantId`, `-HostAppId`, `-BlueprintAppId`,
-`-AgentIdentityId`, `-ClaimsApiAppId`). With `-TestAgents -TestUsers` it also creates the test
-agents, users and groups of [4F](#4f-test-users-and-agents).
+It reads the tenant and app ids from your local `appsettings.json`, or takes them as parameters
+(`-TenantId`, `-HostAppId`, `-BlueprintAppId`, `-AgentIdentityId`, `-ClaimsApiAppId`). Without
+`-TestAppRegs`, create that file first ([section 5](run-locally.md), step 1).
+
+The rest of this page is the manual route, and explains what the script sets.
 
 For the manual PowerShell steps:
 
@@ -166,6 +186,7 @@ Portal → App registrations → POC Claims Web:
 | Blueprint inheritance (if used) | `GET /v1.0/applications/microsoft.graph.agentIdentityBlueprint/$blueprintObjId/inheritablePermissions` (with `OData-Version: 4.0`) | an entry for `$claimsApiAppId` |
 | Blueprint exposes `access_agent` | `GET /v1.0/applications/$blueprintObjId?$select=identifierUris,api` | `api://$blueprintAppId` and one scope `access_agent` |
 | Token content | run the script ([section 5](run-locally.md)) | see the expected rows below |
+| App registrations (if created by the script) | output of `Configure-Entra.ps1 -TestAppRegs` (or `-SetupAll`), steps [0], [2] and [2b] | every line "found", "already", "created" or "added" |
 | Test users and agents (if created) | output of `Configure-Entra.ps1 -TestAgents -TestUsers` | every line "found", "already" or "created"; User1-3 assigned, User4 not |
 
 ## 4F. Test users and agents
@@ -189,7 +210,8 @@ Users sign in with short names (`poc-claims-user1@<domain>` … `user4`); the di
 Create them all (needs User Administrator and Groups Administrator in addition to the roles above):
 
 ```powershell
-.\Configure\Configure-Entra.ps1 -TestAgents -TestUsers
+.\Configure\Configure-Entra.ps1 -TestAgents -TestUsers   # on existing app registrations
+.\Configure\Configure-Entra.ps1 -SetupAll                # or: the app registrations too
 ```
 
 The local tabs only need Agent1 and one signed-in user; the groups and Agents 2-4 matter for the

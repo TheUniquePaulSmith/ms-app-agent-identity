@@ -7,6 +7,8 @@
    Copy-Item appsettings.sample.json appsettings.json
    Copy-Item claims-api/config.sample.json claims-api/config.json
    ```
+   (Or skip this step: `.\Configure\Configure-Entra.ps1 -SetupAll` creates both files, plus
+   `claims-mcp/config.json`, and writes every id and secret into them. See [Entra setup](entra-setup.md).)
    Fill every `<placeholder>` in `appsettings.json`: tenant id, the three client ids, the agent
    identity client id, both secrets, and the Claims API app id inside the two `DownstreamApis`
    scopes (the gateway values are written later by the [section 9](gateway.md) scripts). In

@@ -19,15 +19,43 @@ function Test-ConfiguredId([string] $Value) {
     -not [string]::IsNullOrWhiteSpace($Value) -and -not $Value.StartsWith("<")
 }
 
+# Index of the bracket that closes the "{" or "[" at $OpenAt, skipping strings and // comments
+# (comments in appsettings.json mention routes such as /claims/{id}/...).
+function Find-JsonClose([string] $Text, [int] $OpenAt) {
+    $depth = 0; $inString = $false
+    for ($i = $OpenAt; $i -lt $Text.Length; $i++) {
+        $c = $Text[$i]
+        if ($inString) {
+            if ($c -eq "\") { $i++ } elseif ($c -eq '"') { $inString = $false }
+            continue
+        }
+        if ($c -eq '"') { $inString = $true }
+        elseif ($c -eq "/" -and $i + 1 -lt $Text.Length -and $Text[$i + 1] -eq "/") {
+            $eol = $Text.IndexOf("`n", $i)
+            $i = if ($eol -lt 0) { $Text.Length } else { $eol }
+        }
+        elseif ($c -eq "{" -or $c -eq "[") { $depth++ }
+        elseif ($c -eq "}" -or $c -eq "]") { $depth--; if ($depth -eq 0) { return $i } }
+    }
+    throw "Unbalanced brackets at offset $OpenAt."
+}
+
+# Start ("{") and end ("}") of the top-level object "Section" in appsettings.json text.
+function Find-AppSettingsSection([string] $Text, [string] $Section) {
+    $start = $Text.IndexOf('"' + $Section + '"')
+    if ($start -lt 0) { throw "appsettings.json has no $Section section." }
+    $open = $Text.IndexOf("{", $start)
+    @{ Start = $open; End = (Find-JsonClose $Text $open) }
+}
+
 # Sets "Key": "value" inside the top-level object "Section" of appsettings.json, editing the text so
-# comments survive. Adds the key at the top of the section when it is missing.
+# comments survive. The key may sit in a nested object of the section (for example ClientSecret
+# under ClientCredentials); every occurrence in the section is set. Adds the key at the top of the
+# section when it is missing.
 function Set-AppSetting([string] $AppsPath, [string] $Section, [string] $Key, [string] $Value) {
     $text  = Get-Content $AppsPath -Raw
-    $start = $text.IndexOf('"' + $Section + '"')
-    if ($start -lt 0) { throw "appsettings.json has no $Section section." }
-    $open  = $text.IndexOf("{", $start)
-    $end   = $text.IndexOf("}", $open)
-    $body  = $text.Substring($open, $end - $open)
+    $span  = Find-AppSettingsSection $text $Section
+    $body  = $text.Substring($span.Start, $span.End - $span.Start)
     $quoted = ConvertTo-Json -InputObject $Value
     $pattern = '("' + [regex]::Escape($Key) + '"\s*:\s*)"[^"]*"'
     if ($body -match $pattern) {
@@ -36,7 +64,41 @@ function Set-AppSetting([string] $AppsPath, [string] $Section, [string] $Key, [s
     else {
         $body = "{`n    `"$Key`": $quoted," + $body.Substring(1)
     }
-    Set-Content -Path $AppsPath -Value ($text.Substring(0, $open) + $body + $text.Substring($end)) -NoNewline
+    Set-Content -Path $AppsPath -Value ($text.Substring(0, $span.Start) + $body + $text.Substring($span.End)) -NoNewline
+}
+
+# Sets every string array "Key": [ ... ] inside the top-level object "Section" of appsettings.json
+# (for example both DownstreamApis:*:Scopes). Comments survive.
+function Set-AppSettingList([string] $AppsPath, [string] $Section, [string] $Key, [string[]] $Values) {
+    $text  = Get-Content $AppsPath -Raw
+    $span  = Find-AppSettingsSection $text $Section
+    $body  = $text.Substring($span.Start, $span.End - $span.Start)
+    $pattern = '("' + [regex]::Escape($Key) + '"\s*:\s*)\[[^\]]*\]'
+    if ($body -notmatch $pattern) { throw "appsettings.json $Section has no $Key array." }
+    $list = "[ " + (($Values | ForEach-Object { ConvertTo-Json -InputObject $_ }) -join ", ") + " ]"
+    $body = [regex]::Replace($body, $pattern, { param($m) $m.Groups[1].Value + $list })
+    Set-Content -Path $AppsPath -Value ($text.Substring(0, $span.Start) + $body + $text.Substring($span.End)) -NoNewline
+}
+
+# Creates appsettings.json from appsettings.sample.json when it does not exist yet. Returns $true if it did.
+function Initialize-AppSettings([string] $AppsPath) {
+    if (Test-Path $AppsPath) { return $false }
+    $sample = Join-Path (Split-Path -Parent $AppsPath) "appsettings.sample.json"
+    if (-not (Test-Path $sample)) { throw "Neither $AppsPath nor $sample exists." }
+    Copy-Item $sample $AppsPath
+    return $true
+}
+
+# Sets top-level values in a plain JSON config file (claims-api/config.json, claims-mcp/config.json),
+# creating it from the config.sample.json next to it when missing. Keys keep their order.
+function Set-JsonConfig([string] $Path, [hashtable] $Values) {
+    if (-not (Test-Path $Path)) {
+        $sample = Join-Path (Split-Path -Parent $Path) "config.sample.json"
+        if (Test-Path $sample) { Copy-Item $sample $Path } else { Set-Content -Path $Path -Value "{}" }
+    }
+    $config = Get-Content $Path -Raw | ConvertFrom-Json -AsHashtable
+    foreach ($k in $Values.Keys) { $config[$k] = $Values[$k] }
+    Set-Content -Path $Path -Value ($config | ConvertTo-Json -Depth 5)
 }
 
 # No tenant or object id is hard-coded in these scripts. Returns $Value when the caller passed it;

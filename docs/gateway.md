@@ -37,7 +37,7 @@ Kill: web UI → Logic App → Event Grid (CloudEvents) → claims-killswitch �
 | `Configure/Bicep/apim/mcp-policy.xml` | The gateway policy (PEP 1) |
 | `Configure/Bicep/logicapp/killswitch-workflow.json` | Kill / restore workflow (order as Proposal 6.2 / 6.4) |
 | `Configure/Bicep/eventgrid-subscription.bicep` | Topic → kill switch webhook, dead-letter to blob |
-| `Configure/Configure-Entra.ps1 -TestAgents -TestUsers` | Test agents Agent1-4, test users User1-4, the PDP groups, user assignments; writes them into `appsettings.json` and (once deployed) the PDP registry |
+| `Configure/Configure-Entra.ps1 -SetupAll` | App registrations (`-TestAppRegs`); test agents Agent1-4, test users User1-4, the PDP groups and user assignments (`-TestAgents -TestUsers`). Writes them into `appsettings.json` and (once deployed) the PDP registry |
 | `Configure/Configure-GatewayEntra.ps1` | MCP optional claims, managed identity Graph permissions |
 | `Configure/Deploy-GatewayPoc.ps1` | Bicep, code deployment, Event Grid subscription, writes `appsettings.json` `GatewayMcp` |
 | `GatewayEndpoints.cs`, `wwwroot/gateway.js` | The tab: chat via `/gw/chat/*`, trace per PEP, kill switch, claims table, PDP playground |
@@ -63,7 +63,7 @@ the POC simplification of Proposal section 8.
 From a PowerShell 7 prompt at the repo root (Azure CLI signed in, Microsoft.Graph module):
 
 ```powershell
-.\Configure\Configure-Entra.ps1 -TestAgents -TestUsers                                   # test agents, users, groups, ids into appsettings.json
+.\Configure\Configure-Entra.ps1 -SetupAll                                              # app registrations, test agents, users, groups, ids into appsettings.json
 .\Configure\Deploy-GatewayPoc.ps1 -NamePrefix <prefix> -PublisherEmail you@contoso.com   # Azure + code + appsettings.json
 .\Configure\Configure-Entra.ps1 -TestAgents -TestUsers                                   # again: agents, groups, members into the PDP registry
 .\Configure\Configure-GatewayEntra.ps1                                                   # MCP optional claims, managed identity Graph permissions
